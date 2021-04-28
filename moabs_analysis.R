@@ -17,32 +17,6 @@ readMOABS_DMR_bedfile <- function(filename) {
   return(dmr)
 }
 
-# Read expression matrix and calculate expression changes using edgeR
-library(limma)
-library(edgeR)
-library(DESeq2)
-mat <- read.table("EHX_1516_v_217_Jan2019.txt", row.names = 1, header = TRUE, sep = "\t")
-conditions <- factor(c(rep("EH1516", 3), rep("EH217", 3)))
-design <- model.matrix(~conditions)
-DGE <- DGEList(mat)
-DGE <- calcNormFactors(DGE)
-v <- voom(DGE, design = design, plot = TRUE)
-fit <- eBayes(lmFit(v, design))
-expr.coef <- topTable(fit, number = Inf, coef = 2, sort.by = "P")
-
-#DESeq2 analysis
-conditions = data.frame(conditions)
-ddsTable <- DESeqDataSetFromMatrix(countData = mat, colData = conditions, design = ~conditions)
-ddsTable <- estimateSizeFactors(ddsTable)
-dds <- DESeq(ddsTable)
-res <- results(dds)
-res$padj[is.na(res$padj)]  <- 1
-res$log2FoldChange[is.na(res$log2FoldChange)] <- 0
-expr.coef <- cbind(res[rownames(expr.coef), ]$log2FoldChange, expr.coef)
-colnames(expr.coef)[1] <- "LFC" # logFC from DESeq2 analysis
-expr.coef <- cbind(res[rownames(expr.coef), ]$baseMean, expr.coef)
-colnames(expr.coef)[1] <- "baseMean"
-
 # Read MOBS DMR file
 moabs.DMR <- readMOABS_DMR_bedfile("dmr_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
 moabs.DMR.Ann <- annotateWithGeneParts(moabs.DMR, gene.parts, intersect.chr = TRUE)
@@ -55,6 +29,8 @@ genomation::plotTargetAnnotation(moabs.DMR.Ann)
 cpgi = readFeatureFlank("../v2/Ehux_genbank.bed", feature.flank.name=c("CpGi","shores"))
 moabs.DMR.cpgi <- annotateWithFeatureFlank(as(moabs.DMR, "GRanges"), cpgi$CpGi,cpgi$shores,feature.name="CpGi",flank.name="shores", intersect.chr = TRUE)
 genomation::plotTargetAnnotation(moabs.DMR.cpgi,col=c("green","gray","white"),main="differential methylation annotation")
+# convert DMR to a dataframe
+moabs.DMR.df <- as.data.frame(moabs.DMR)
 
 cpg_i <- cpgi$CpGi
 cpg_i$name = gene.parts$TSSes$name  
@@ -134,6 +110,8 @@ biomine85 <- read.table("../v2/biominer_genes.txt", header=TRUE, sep="\t", as.is
 biomine85.DMR.mean <- plot_DMR_and_LFC(moabs.DMR, moabs.DMR.TSS, biomine85$ID)
 
 # Plot LogFC vs. methylation diff for differentially expressed (DE) genes
+annot.DE <- read.csv("../../gene_expression/Ehux_1516_v_217/Jan2019/output/DE_E1516_vs_E217.annot.txt", 
+                     header = TRUE, row.names = 1, sep="\t")
 DE_ids <- intersect(moabs.DMR.TSS$ID, rownames(annot.DE))
 DE.DMR.TSS <- plotMethyl_and_LFC(moabs.DMR, moabs.DMR.TSS, DE_ids)
 DE.DMR.mean <- aggregate_DMR(DE.DMR.TSS)
@@ -141,7 +119,7 @@ DE.DMR.mean <- plot_Mean_Meth_Diff_and_LFC(DE.DMR.mean)
 DE.DMR.mean$Description <- annot.DE[as.character(DE.DMR.mean$ID), "Description"]
 DE.DMR.mean.up <- subset(DE.DMR.mean, logFC > 0)
 DE.DMR.mean.down <- subset(DE.DMR.mean, logFC < 0)
-write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
+#write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
 
 # Retrieve the DMRs overlapped with promoter regions
 # s4@field is used to extract a field from a S4 object
@@ -165,4 +143,31 @@ ehux.DMR.mean <- aggregate_DMR(ehux.DMR.TSS)
 ehux.DMR.mean <- plot_Mean_Meth_Diff_and_LFC(ehux.DMR.mean)
 
 t <- plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "233823", methDiff = myDiff10)
-plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "62679", methDiff = myDiff.DSS)
+plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "233304", methDiff = myDiff.DSS)
+plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "193771", methDiff = myDiff.DSS)
+
+plotOneDMR(moabs.DMR, moabs.DMR.TSS, "193771", methDiff = myDiff.DSS)
+
+id = "193771"
+up_len = 3000
+rna = rownames(mapping[mapping$ID == id, ])
+TSSes = gene.parts$TSSes
+exons = gene.parts$exons
+upstream = TSSes[TSSes$name == rna[1], ]
+if (as.logical(strand(upstream) == '-')) {
+  end(upstream) = end(upstream) + up_len
+} else {
+  start(upstream) = start(upstream) - up_len
+}
+ex = exons[exons$name == rna[1], ]
+#gene_n_up = GRangesList(upstream, ex)
+gene_n_up = c(upstream, ex)
+gene_n_up = range(gene_n_up)
+strand(gene_n_up) = '*'
+methhits <- getMethInGRange(data.raw, gene_n_up)
+matplot(methhits$start, methhits$meth.diff, type="o", pch = 20,col = 'blue',
+        xlab=paste("Genomic location", methhits$chr[1]), 
+        ylab="Methylation difference" )
+abline(h=c(-10,0,10),lty=2)
+
+

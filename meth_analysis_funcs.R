@@ -131,11 +131,23 @@ plotOneDMR <- function(dmrs, dmrTSS, id, methDiff = myDiff.DSS) {
   gr <- range(dmr_id.gr)
   strand(gr) <- "*"
   methhits <- getMethInGRange(methDiff, gr)
-  matplot(methhits$start, methhits$meth.diff, type="b", pch = 1,xlab=paste("Genomic location", seqnames(gr), sep = " "), ylab="Methylation difference" )
+  matplot(methhits$start, methhits$meth.diff, type="o", pch = 20,col = 'blue',
+          xlab=paste("Genomic location", seqnames(gr), sep = " "), 
+          ylab="Methylation difference" )
   abline(h=c(-10,0,10),lty=2)
 }
 
 plot_DMRs <- function(dmrs) {
   plot(dmrs$meth.diff, dmrs$logFC, type="p", cex = 1, pch = 20, col= "blue", xlab = "Methylation Difference", ylab = "Log Fold Change")
   text(dmrs$meth.diff, dmrs$logFC + 0.25, labels = dmrs$ID, cex = 0.5)
+}
+
+# Plot methylation data for a gene
+plot_Methyl_Grange <- function(methData, grang) {
+  # 
+  methhits <- getMethInGRange(methData, grang)
+  matplot(methhits$start, methhits$meth.diff, type="o", pch = 20,col = 'blue',
+          xlab=paste("Genomic location", methhits$chr[1]), 
+          ylab="Methylation difference" )
+  abline(h=c(-10,0,10),lty=2)
 }

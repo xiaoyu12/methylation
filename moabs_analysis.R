@@ -19,6 +19,12 @@ readMOABS_DMR_bedfile <- function(filename) {
 
 # Read MOBS DMR file
 moabs.DMR <- readMOABS_DMR_bedfile("dmr_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
+# Find the overlaps of DMRs and genes upstream regions
+annot.up1000 <- annotateWithFeature(moabs.DMR, up1000)
+genomation::plotTargetAnnotation(annot.up1000)
+annot.down1000 <- annotateWithFeature(moabs.DMR, down1000)
+genomation::plotTargetAnnotation(annot.down1000)
+
 moabs.DMR.Ann <- annotateWithGeneParts(moabs.DMR, gene.parts, intersect.chr = TRUE)
 moabs.DMR.TSS <- getAssociationWithTSS(moabs.DMR.Ann)
 moabs.DMR.TSS$ID <- mapping[moabs.DMR.TSS$feature.name, 2]
@@ -26,7 +32,7 @@ moabs.DMR.TSS$logFC <- expr.coef[as.character(moabs.DMR.TSS$ID), ]$logFC
 genomation::plotTargetAnnotation(moabs.DMR.Ann)
 # Read cpg islands info
 # The returned cpgi seem to be regions upstream from TSS
-cpgi = readFeatureFlank("../v2/Ehux_genbank.bed", feature.flank.name=c("CpGi","shores"))
+genes = readFeatureFlank("../v2/Ehux_genbank.bed", feature.flank.name=c("Gene","UTR"))
 moabs.DMR.cpgi <- annotateWithFeatureFlank(as(moabs.DMR, "GRanges"), cpgi$CpGi,cpgi$shores,feature.name="CpGi",flank.name="shores", intersect.chr = TRUE)
 genomation::plotTargetAnnotation(moabs.DMR.cpgi,col=c("green","gray","white"),main="differential methylation annotation")
 # convert DMR to a dataframe

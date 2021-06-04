@@ -8,17 +8,31 @@ import scipy.interpolate
 import pickle
 
 # Down sample the data by averaging the value in size r window
-def down_sample(x, r):
+def down_sample_2d(x, r, axis=1):
     # x: input 2D numpy array
     # r: ratio of down sampling
-    ns = x.shape[1] // r       # number of samples
-    #print(f"ns = {ns}")
-    # Remove remainder columns more than ns * r
-    x = x[:, 0:int(ns*r)]
-    # Average every r elements
-    x = x.reshape(x.shape[0], -1, r).mean(axis=2)
+    if axis == 1:
+        ns = x.shape[1] // r       # number of samples
+        #print(f"ns = {ns}")
+        # Remove remainder columns more than ns * r
+        x = x[:, 0:int(ns*r)]
+        # Average every r elements
+        x = x.reshape(x.shape[0], -1, r).mean(axis=2)
+    elif axis == 0:
+        ns = x.shape[0] // r
+        x = x[0:int(ns*r), :]
+        x = np.moveaxis(x, 0, -1) # swap axes
+        x = x.reshape(x.shape[0], -1, r).mean(axis=2)
+        x = np.moveaxis(x, 0, -1) # swap back
     return x
 
+
+def down_sample_1d(x, r):
+    # x: input 1D numpy array
+    ns = len(x) // r
+    x = x[0: int(ns*r)]
+    x = x.reshape(-1, r).mean(axis=1)
+    return x
 
 ##
 def read_gene_structs(bed_file="Ehux_genbank.bed"):
@@ -138,7 +152,10 @@ def read_methylation_data(methy_file):
 # interp_method - method of interpolation, can be either "linear", "pchip" or "none"
 # Return - interpolated methylation values between win_start and win_end
 def interpolate_methyl_window(
-        fm, win_start, win_end, flank_win=5000, interp_method="linear"
+        fm, win_start, win_end,
+        flank_win=5000,
+        interp_method="linear",
+        down_sampling=20,
 ):
     interp_win_start = max(0, win_start - flank_win)
     interp_win_end = win_end + flank_win
@@ -159,11 +176,25 @@ def interpolate_methyl_window(
     elif interp_method == "pchip":
         x = range(win_start, win_end)
         interp_y = scipy.interpolate.pchip_interpolate(raw_x, raw_y, x)
+    elif interp_method == "avg":   # calculate average methylation in shifting windows
+        fm_window = fm.loc[win_start:win_end]
+        count_y = np.zeros(win_end - win_start)
+        for pos, meth in fm_window.iteritems():
+            idx = pos - win_start
+            if idx < win_end - win_start:
+                interp_y[idx] = meth
+                count_y[idx] = 1
+        interp_y = np.reshape(interp_y, (-1, down_sampling)).sum(axis=1)
+        count_y = np.reshape(count_y, (-1, down_sampling)).sum(axis=1)
+        count_y = np.clip(count_y, 1, None)  # set min count to 1 to avoid dividing by zero
+        interp_y = interp_y / count_y
+        interp_y = np.repeat(interp_y, down_sampling)
     else: # no interpolation
         fm_window = fm.loc[win_start:win_end]
         for pos, meth in fm_window.iteritems():
             idx = pos - win_start
-            interp_y[idx] = meth
+            if idx < win_end - win_start:
+                interp_y[idx] = meth
 
     return interp_y
 
@@ -171,7 +202,9 @@ def interpolate_methyl_window(
 # Calculate methylation changes in a window surrounding TSS
 def calc_methylation_diff_in_window(genes, min_cpgs=30, interp_method="linear",
                                     meth_in_file="Ehux_meth_merged.tsv",
-                                    md_03_sites=3,):
+                                    md_03_sites=3,
+                                    threshold_meth_diff=0.3,
+                                    down_sampling=1,):
     # Read methylation data files
     meth_pickle_file = meth_in_file+".pickle"
     if not os.path.exists(meth_pickle_file):  # Pickle file doesn't exist
@@ -194,9 +227,10 @@ def calc_methylation_diff_in_window(genes, min_cpgs=30, interp_method="linear",
     num_gene = genes.shape[0]
     print(f"# of genes = {num_gene}, window size = {win_len}")
     #
-    gene_meth_diff = {}
+    meth_data_list = []
+    index_list = []
     for id, gene in genes.iterrows():
-        vals = np.zeros(win_len)
+        vals = np.zeros((2, win_len))
         
         # Select methyl data within the window range
         if not (gene.chr in meth):     # if methylation data isn't available for the given chr, just continue
@@ -206,8 +240,8 @@ def calc_methylation_diff_in_window(genes, min_cpgs=30, interp_method="linear",
         # Select CpGs within the window range
         fm_window = fm.loc[gene.window_start : gene.window_end]
         # Filter out a window if the number of CpGs < min_meth
-        print(f"gene {id} has {fm_window.shape[0]} CpG sites")
-        print(fm_window.index)
+        #print(f"gene {id} has {fm_window.shape[0]} CpG sites")
+        #print(fm_window.index)
         if fm_window.shape[0] < min_cpgs:
             sys.stderr.write(
                 f"CpG sites Warning: {id} has {fm_window.shape[0]} < {min_cpgs} CpGs\n"
@@ -224,50 +258,71 @@ def calc_methylation_diff_in_window(genes, min_cpgs=30, interp_method="linear",
             continue
 
         #print(f"gene={id}, {gene.chr}, win_start={gene.window_start}, win_end={gene.window_end}")
-        fm_win_1516 = interpolate_methyl_window(fm["beta.1516"], gene.window_start, gene.window_end, interp_method=interp_method)
-        fm_win_217 = interpolate_methyl_window(fm["beta.217"], gene.window_start, gene.window_end, interp_method=interp_method)
+        fm_win_1516 = interpolate_methyl_window(fm["beta.1516"], gene.window_start, gene.window_end,
+                                                interp_method=interp_method, down_sampling=down_sampling)
+        fm_win_217 = interpolate_methyl_window(fm["beta.217"], gene.window_start, gene.window_end,
+                                               interp_method=interp_method, down_sampling=down_sampling)
 
-        vals = fm_win_217 - fm_win_1516
+        # Filter out all rows that don't have significant methylation changes,
+        # i.e. the max absolute methyl diff < 0.3
+        diff = fm_win_217 - fm_win_1516
+        #if(np.max(np.abs(diff))) < threshold_meth_diff:
+        #    continue
+
         # Reverse the vals array for genes on the negative strand
         if gene.strand == '-':
-            vals = vals[::-1]
-        gene_meth_diff[id] = vals
+            diff = diff[::-1]
+            vals[0, :] = fm_win_1516[::-1]
+            vals[1, :] = fm_win_217[::-1]
+        else:
+            vals[0, :] = fm_win_1516
+            vals[1, :] = fm_win_217
+        #downsampling
+        if (down_sampling > 1):
+            vals = down_sample_2d(vals, down_sampling)
+
+        index_list.append(id)
+        meth_data_list.append(vals)
     # Return results as a dataframe
-    return pd.DataFrame.from_dict(gene_meth_diff, orient="index")
+    meth_data = np.stack(meth_data_list)
+    return [meth_data, index_list]
+
 
 # randomly shuffle and divide the data into training, validation and test sets
-def data_prep(meth_diff, expr_lfc):
+def data_prep(meth_data, expr_lfc):
     # Use a seed for reproducibility
     np.random.seed(42)
     # shuffle the dataset randomly
-    permut = np.random.permutation(meth_diff.shape[0])
+    permut = np.random.permutation(meth_data.shape[0])
     print("permutations:", permut[0:10])
-    meth_diff = meth_diff.iloc[permut]
-    expr_lfc = expr_lfc.iloc[permut]
-    print(expr_lfc.head())
-    print(np.sign(expr_lfc.head()))
-    print(meth_diff.head())
+
+    meth_diff = meth_data[permut,:,:]
+    expr_lfc = np.asarray(expr_lfc)
+    expr_lfc = expr_lfc[permut]
+    print(expr_lfc[0:5])
+    print(np.sign(expr_lfc[0:5]))
+    print(meth_diff[0:5, :, :])
 
     # split data into training(60%), validation(20%) and testing(20%) sets
-    l = meth_diff.shape[0]
+    l = meth_data.shape[0]
     lv = int(l / 5)  # number of validation data
     lt = int(l / 5)  # number of testing data
     ln = l - lv - lt  # number of training data
 
     start, end = 0, ln
     print(f"start: {start}, end: {end}")
-    mdf_train = np.asarray(meth_diff.iloc[start:end])
-    lfc_train = np.asarray(expr_lfc.iloc[start:end])
+    mdf_train = meth_data[start:end, :, :]
+    lfc_train = expr_lfc[start:end]
     print(mdf_train.shape)
     print(mdf_train[0:5, 0:5])
     start, end = ln, ln + lv
     print(f"start: {start}, end: {end}")
-    mdf_valid = np.asarray(meth_diff.iloc[start:end])
-    lfc_valid = np.asarray(expr_lfc.iloc[start:end])
+    mdf_valid = meth_data[start:end, :, :]
+    lfc_valid = expr_lfc[start:end]
     start, end = ln + lv, ln + lv + lt
     print(f"start: {start}, end: {end}")
-    mdf_test = np.asarray(meth_diff.iloc[start:end])
-    lfc_test = np.asarray(expr_lfc.iloc[start:end])
+    mdf_test = meth_data[start:end, :, :]
+    lfc_test = expr_lfc[start:end]
 
     print(mdf_train.shape, lfc_train.shape)
     print(mdf_train[0:5, 0:5])
@@ -350,43 +405,31 @@ if __name__ == '__main__':
     print(genes.shape)
 
     # Calcualte methylation difference in gene windows
-    meth_diff = calc_methylation_diff_in_window(genes, min_cpgs=args.min_cpg_sites,
-                                                interp_method=args.interp_method,
-                                                meth_in_file=args.in_file,
-                                                md_03_sites=3,
+    [meth_data, idx_list] = calc_methylation_diff_in_window(genes, min_cpgs=args.min_cpg_sites,
+                                                            interp_method=args.interp_method,
+                                                            meth_in_file=args.in_file,
+                                                            md_03_sites=3,
+                                                            threshold_meth_diff=args.threshold_meth_diff,
+                                                            down_sampling=args.down_sampling,
                                                 )
-    meth_diff = meth_diff.sort_index()
-    print(meth_diff.shape)
-
-    # Filter out all rows that don't have significant methylation changes,
-    # i.e. the max absolute methyl diff < 0.3
-    diff_methyled = meth_diff.abs().max(axis=1) >= args.threshold_meth_diff
-    meth_diff = meth_diff.loc[diff_methyled, :]
-    print(meth_diff.shape)
+    print(meth_data.shape)
 
     # Only keep the genes that have methylation diff data
-    expr_lfc = genes.loc[meth_diff.index, "LFC"]
-    expr_lfc = expr_lfc.sort_index()
+    expr_lfc = genes.loc[idx_list, "LFC"]
     print(expr_lfc.shape)
     print(expr_lfc.head(5))
 
-    # Down sampling the methylation difference data
-    if args.down_sampling > 1:
-        data_ds = down_sample(meth_diff.to_numpy(), args.down_sampling)
-        meth_diff = pd.DataFrame(data_ds, index=meth_diff.index)
-        print(f"After down sampling, {meth_diff.shape}")
-        print(meth_diff.iloc[0:5, 100:105])
-
-    [mdf_train, lfc_train, mdf_valid, lfc_valid, mdf_test, lfc_test] = data_prep(meth_diff, expr_lfc)
+    [mdf_train, lfc_train, mdf_valid, lfc_valid, mdf_test, lfc_test] = data_prep(meth_data, expr_lfc)
 
     # Save the methylation diff and gene log2FC data into a pickle file
     if(args.out_file == None):
-        args.out_file = "data_EH1516_EH217_"+args.interp_method+".pickle"
+        args.out_file = "2d_"+args.interp_method+".pickle"
     #pickle_file = "data_EH1516_EH217_filtered.pickle"
     with open(args.out_file, "wb") as fp:
         #save = {"meth_diff": meth_diff, "expr_lfc": expr_lfc}
         save = {
-            "meth_diff": meth_diff,
+            "meth_data": meth_data,
+            "index_list": idx_list,
             "expr_lfc": expr_lfc,
             "train_dataset": mdf_train,
             "train_labels": lfc_train,

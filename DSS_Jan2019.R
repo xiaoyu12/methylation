@@ -44,7 +44,9 @@ write_BSobj <- function(BSobj, file_name="meth_raw_avg_data.txt") {
   data.raw[is.na(data.raw)] <- 0
   #data.raw <- drop_na(data.raw)
   cov.raw$EH1516 = (cov.raw$EH1516C + cov.raw$EH1516D)
+  cov.raw$EH1516[cov.raw$EH1516 == 0] <- 1
   cov.raw$EH217 = (cov.raw$EH217A + cov.raw$EH217B + cov.raw$EH217C)
+  cov.raw$EH217[cov.raw$EH217 == 0] <- 1
   # number of methylated C's
   data.raw$EH1516 = (cov.raw$EH1516C*data.raw$EH1516C + cov.raw$EH1516D*data.raw$EH1516D)
   data.raw$EH217 = (cov.raw$EH217A*data.raw$EH217A + cov.raw$EH217B*data.raw$EH217B + cov.raw$EH217C*data.raw$EH217C)

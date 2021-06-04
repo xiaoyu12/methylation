@@ -2,6 +2,41 @@ library(methylKit)
 library(genomation)
 library(stringr)
 library(Biobase)
+#source("read_bismark_methyl.R")
+
+methobj <- read_Bismark_coverage()
+#Unite methylRawList to a single table
+meth <- methylKit::unite(methobj)
+rm(methobj)
+
+# Add a column of gene IDs to the Granges or dataframe
+addMapID <- function(ranges) {
+  mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
+  colnames(mapping) <- c("gene", "ID")
+  ranges$ID = mapping[ranges$name, "ID"]
+  ranges <- as.data.frame(ranges)
+  ranges = ranges[!duplicated(ranges$ID), ]    # remove duplicates due to alternative splicing
+  # convert back to Granges
+  ranges <- as(ranges, "GRanges")
+  return(ranges)
+}
+
+# Get Granges object representing regions upstream and downstream from TSSes with given len
+getPromoterRegions <- function(up = 1000, down = 1000) {
+  gene_structs <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE,
+                                         up.flank = up, down.flank = down, unique.prom = FALSE)
+  promoters <- addMapID(gene_structs$promoter)
+  return(promoters)
+}
+
+up3000 <- getPromoterRegions(up = 3000, down = 0)
+# get methylation data in the upstream 3000 regions
+meth.up3000 <- selectByOverlap(meth, up3000)
+
+up1000 <- getPromoterRegions(up = 1000, down = 0)
+meth.up1000 <- selectByOverlap(meth, up1000)
+
+down1000 <- getPromoterRegions(up = 0, down = 1000)
 
 # Analyze DMRs related to gene features and expression profiles
 # DMR: DMR dataframe. It has a field named "meth.diff"
@@ -31,13 +66,6 @@ plot(dmr_CHG$sel$meth.diff, dmr_CHG$sel$logFC, type="p", cex = 1, pch = 20, col=
 text(dmr_CHG$sel$meth.diff, dmr_CHG$sel$logFC + 0.25, labels = dmr_CHG$sel$ID, cex = 0.5)
 
 
-# List of CpG coverage files
-file.list <- list("EH1516C.merged_CpG_evidence.cov",
-                  "EH1516D.merged_CpG_evidence.cov",
-                  "EH217A.merged_CpG_evidence.cov",
-                  "EH217B.merged_CpG_evidence.cov",
-                  "EH217C.merged_CpG_evidence.cov")
-
 
 # Read Ehux gene structures
 gene.parts <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE, unique.prom = FALSE)
@@ -48,15 +76,21 @@ gene.parts_up1000 <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unu
 gene.parts_dn1000 <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE, 
                                             up.flank = 0, down.flank = 1000, unique.prom = FALSE)
 
-sample.ids = c("EH1516C", "EH1516D", "EH217A", "EH217B", "EH217C")
-# Read methylation data
-methobj <- methRead(file.list, sample.id = as.list(sample.ids),
-                    assembly = "ehux", pipeline = "bismarkCoverage", treatment = c(0, 0, 1, 1, 1),
-                    context = "CpG", mincov = 3, header = FALSE)
+readSelectedGenes <- function(gene_list_file, up_flank = 1000, down_flank = 1000) {
+  # read gene_list into a data frame
+  tmp_file = "./Ehux_tmp.bed"
+  gene_list = read.table(gene_list_file, sep = "\t", header = TRUE, as.is = TRUE)
+  gene_bed = read.table("../v2/Ehux_genbank.bed", sep="\t", header = FALSE, as.is = TRUE)
+  gene_bed = gene_bed[gene_bed[, 4] %in% gene_list$rna, ]
+  write.table(gene_bed, tmp_file, sep = "\t", row.names = FALSE, col.names =FALSE, quote = FALSE)
+  features <- readTranscriptFeatures(tmp_file, remove.unusual = FALSE, unique.prom = FALSE,
+                         up.flank = up_flank, down.flank = down_flank)
+  file.remove(tmp_file)
+  return(features)
+}
 
-#Unite methylRawList to a single table
-meth <- unite(methobj)
-rm(methobj)
+genes.DE_no_vrlp <- readSelectedGenes("DE_no_overlap.tsv")
+
 
 myDiff.DSS <- calculateDiffMethDSS(meth, mc.cores = 4)
 
@@ -71,11 +105,11 @@ PCASamples(meth10, scale = FALSE)
 myDiff10 <- calculateDiffMeth(meth10)
 #myDiff15 <- calculateDiffMeth(unite(filterByCoverage(methobj, lo.count = 15)))
 
-meth.CpG.cov10 <- unite(methCpG, destrand=TRUE)
+meth.CpG.cov10 <- methylKit::unite(methCpG, destrand=TRUE)
 PCASamples(meth.CpG.cov10, scale = FALSE)
 getCorrelation(meth.CpG.cov10, plot = FALSE)
 
-meth.CHG.cov10 <- unite(filterByCoverage(methCHG, lo.count = 10))
+meth.CHG.cov10 <- methylKit::unite(filterByCoverage(methCHG, lo.count = 10))
 getCorrelation(meth.CHG.cov10, plot = FALSE)
 clusterSamples(meth.CHG.cov10, dist="correlation", plot=TRUE)
 PCASamples(meth.CHG.cov10, scale = FALSE)

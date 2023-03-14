@@ -28,6 +28,8 @@ t <- topTable(fit, number = Inf, coef=2)
 prom.dm <- subset(t, adj.P.Val < 0.05) # Differential methylated promoter regions
 
 # Calculate methylations of CPG islands and shores
+# Err: features here are CpGi, but gene regions instead. There isn't a CpGi file for Ehux
+#cpgi=readFeatureFlank("Ehux_genbank.bed", feature.flank.name=c("CpGi","shores"))
 #cpgi.Ann <- annotateWithGeneParts(cpgi[[1]], gene.parts)
 #cpgi.TSS <- getAssociationWithTSS(cpgi.Ann)
 cpg_i <- cpgi$CpGi

@@ -1,10 +1,47 @@
-library(Gviz)
-library(ggbio)
+#library(Gviz)
+#library(ggbio)
 
-# Calculate methylation m values from methylBase object
-calc_M_values <- function (meth) {
+# Add a column of gene IDs to the Granges or dataframe
+addMapID <- function(ranges) {
+  mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
+  colnames(mapping) <- c("gene", "ID")
+  ranges$ID = mapping[ranges$name, "ID"]
+  ranges <- as.data.frame(ranges)
+  ranges = ranges[!duplicated(ranges$ID), ]    # remove duplicates due to alternative splicing
+  # convert back to Granges
+  ranges <- as(ranges, "GRanges")
+  return(ranges)
+}
+
+
+# Analyze DMRs overlapped with gene features and expression profiles
+# DMR: GRanges representing DMRs or DMCs. can also be a dataframe. 
+# features: Genomic features such as promoters, cpgi etc.
+# gene_exps: dataframe of differentially expressed genes with a field "logFC"
+# selected_ids: consider a subset of DMRs for given selected_ids 
+overlap_DMR_GeneFeatures <- function(DMR, features, gene_exps, selected_ids = NULL, ignore.strand = TRUE) {
+  #DMR.gr <- makeGRangesFromDataFrame(DMR, keep.extra.columns = FALSE, ignore.strand = ignore.strand)
+  DMR.gr <- as(DMR, "GRanges")
+  DMR.Ann <- annotateWithGeneParts(DMR.gr, features, intersect.chr = TRUE)
+  DMR.TSS <- getAssociationWithTSS(DMR.Ann)
+  genomation::plotTargetAnnotation(DMR.Ann)
+  DMR.TSS <- cbind(DMR[DMR.TSS$target.row, ], DMR.TSS)
+  # mapping feature name to gene ID's
+  DMR.TSS$ID <- mapping[DMR.TSS$feature.name, 2]
+  DMR.TSS$logFC <- gene_exps[as.character(DMR.TSS$ID), ]$logFC
+  DMR.TSS.sel <- NULL
+  if(!is.null(selected_ids)) {
+    ids <- intersect(DMR.TSS$ID, selected_ids)
+    DMR.TSS.sel <- DMR.TSS[which(DMR.TSS$ID %in% ids), ]
+  }
+  newList <- list("ann" = DMR.Ann, "tss" = DMR.TSS, "sel" = DMR.TSS.sel)
+  return (newList)
+}
+
+# Calculate methylation m values for methylBase object
+calc_M_values <- function (meth, nsamples=5) {
   t <- getData(meth)         # extract data part into a data frame
-  nsamples <- (length(t) - 4) / 3
+  #nsamples <- (length(t) - 4) / 3
   meth.data <- t[, 1:4]
   for (i in 1:nsamples) {
     colname = paste0("m", i)
@@ -14,6 +51,10 @@ calc_M_values <- function (meth) {
   return(meth.data)
 }
   
+# Calculate methylation beta values for methylBase object
+calc_Beta_values <- function (meth, nsamples=5) {
+  # TODO
+}
 # Convert a region methylRaw list into a data.frame
 # methylraw:  Large methylRawList 
 # regions: data frame of genomic regions
@@ -46,12 +87,12 @@ methyl_to_data_frame <- function(methylraw, regions) {
   
 # Get methylation values for gene annotated features: e.g. promoters, exons ...
 getFeatureMethyl <- function(m.obj, g.features, s.names, lo.count=100) {
-  mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
-  colnames(mapping) <- c("gene", "ID")
+  #mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
+  #colnames(mapping) <- c("gene", "ID")
   nsamples <- length(m.obj)
   promoters <- as.data.frame(g.features)
-  promoters$ID = mapping[promoters$name, "ID"]
-  promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
+  #promoters$ID = mapping[promoters$name, "ID"]
+  #promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
   colnames(promoters)[1] <- "chr"
   
   promobj <- regionCounts(m.obj, g.features)

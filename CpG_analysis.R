@@ -20,7 +20,6 @@ file.list <- list("EH1516C.merged_CpG_evidence.cov",
                   "EH217C.merged_CpG_evidence.cov")
 
 # Read methylation data
-sample.ids = c("EH1516C", "EH1516D", "EH217A", "EH217B", "EH217C")
 methobj <- methRead(file.list, sample.id = as.list(sample.ids),
                     assembly = "ehux", pipeline = "bismarkCoverage", treatment = c(0, 0, 1, 1, 1),
                     context = "CpG", mincov = 3, header = FALSE)

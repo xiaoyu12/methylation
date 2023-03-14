@@ -17,9 +17,68 @@ readMOABS_DMR_bedfile <- function(filename) {
   return(dmr)
 }
 
-# Read MOBS DMR file
+# Read MOABS DMR and DMC files
 moabs.DMR <- readMOABS_DMR_bedfile("dmr_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
+moabs.DMC <- readMOABS_DMR_bedfile("dmc_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
+
+# Read MOABS DMRs from moabs1.3.4 analysis
+moabs.134 <- readMOABS_DMR_bedfile("dmr_M2_moabs1.3.4.bed")
+ov <- findOverlaps(moabs.134, moabs.DMR)
+length(unique(from(ov)))
+length(unique(to(ov)))
+# Only keep the overlapped ones. Others are susceptible based on manual inspection
+moabs.DMR <- moabs.134[unique(from(ov)), ]
+# convert DMR to a dataframe
+moabs.DMR.df <- as.data.frame(moabs.DMR)
+colnames(moabs.DMR.df)[1] <- "chr"
+
+
+# Read MOABS CHG DMRs 
+# DMRs are computed using converted bismark files 
+# Data are from the directory /bigdata/xiaoyu/bisulfite/Jan2019/moabs_bismark on the server
+moabs.HG.DMC <- readMOABS_DMR_bedfile("dmc_M2_EH1516.HG.bed_vs_EH217.HG.bed.bed")
+moabs.HG.DMR <- readMOABS_DMR_bedfile("dmr_M2_EH1516.HG.bed_vs_EH217.HG.bed.bed")
+moabs.HG.DMR.df <- as.data.frame(moabs.HG.DMR)
+colnames(moabs.HG.DMR.df)[1] <- "chr"
+moabs.HG.DMR.l100 <- subset(moabs.HG.DMR.df, width >= 100)
+showOneDMR(moabs.HG.134.l100[2, ], methCHG_DSS_mincov10$BSobj)
+
+# combine MOABS CpG and CHG DMRs into a genomicrange list
+moabs.all <- c(moabs.DMR, moabs.HG.DMR)
+
+# Find overlaps of DMRs and genes
+# Removed previous incorrect referrence to CPGi as Ehux_genbank.bed doesn't have that info
+# It only has gene structures. 
+
+ov <- findOverlaps(moabs.all, genes$Gene)
+DMGs <- genes$Gene[unique(to(ov)), ]
+DMGs$ID <- mapping[DMGs$name, ]$ID
+ov <- findOverlaps(moabs.DMR, genes$Gene)
+DMGs.CpG <- genes$Gene[unique(to(ov)), ]
+DMGs.CpG$ID <- mapping[DMGs.CpG$name,]$ID
+ov <- findOverlaps(moabs.HG.DMR, genes$Gene)
+DMGs.CHG <- genes$Gene[unique(to(ov)), ]
+DMGs.CHG$ID <- mapping[DMGs.CHG$name, ]$ID
+
+# extend gene regions upstream 1000 bp
+genes_up1000 <- resize(genes, width(genes) + 1000L, fix = "end")
+
+#write.csv(DMGs.CpG$ID, file="DMGs.CpG.csv", quote=FALSE)
+#write.csv(DMGs.CHG$ID, file="DMGs.CHG.csv", quote=FALSE)
+#write.csv(DMGs$ID, file="DMGs.csv", quote = FALSE)
+
 # Find the overlaps of DMRs and genes upstream regions
+up2000 <- intersect(up2000, scaffolds.gr, ignore.strand=TRUE)
+ov <- findOverlaps(moabs.all, up2000)
+DMPs <- up2000[unique(to(ov)), ]
+ov <- findOverlaps(moabs.DMR, up2000)
+DMPs.CpG <- up2000[unique(to(ov)), ]
+ov <- findOverlaps(moabs.HG.DMR, up2000)
+DMPs.CHG <- up2000[unique(to(ov)), ]
+#write.csv(DMPs.CpG$ID, file="DMPs.CpG.csv", quote=FALSE)
+#write.csv(DMPs.CHG$ID, file="DMPs.CHG.csv", quote=FALSE)
+#write.csv(DMPs$ID, file="DMPs.csv", quote = FALSE)
+
 annot.up1000 <- annotateWithFeature(moabs.DMR, up1000)
 genomation::plotTargetAnnotation(annot.up1000)
 annot.down1000 <- annotateWithFeature(moabs.DMR, down1000)
@@ -30,21 +89,24 @@ moabs.DMR.TSS <- getAssociationWithTSS(moabs.DMR.Ann)
 moabs.DMR.TSS$ID <- mapping[moabs.DMR.TSS$feature.name, 2]
 moabs.DMR.TSS$logFC <- expr.coef[as.character(moabs.DMR.TSS$ID), ]$logFC
 genomation::plotTargetAnnotation(moabs.DMR.Ann)
-# Read cpg islands info
-# The returned cpgi seem to be regions upstream from TSS
-genes = readFeatureFlank("../v2/Ehux_genbank.bed", feature.flank.name=c("Gene","UTR"))
-moabs.DMR.cpgi <- annotateWithFeatureFlank(as(moabs.DMR, "GRanges"), cpgi$CpGi,cpgi$shores,feature.name="CpGi",flank.name="shores", intersect.chr = TRUE)
-genomation::plotTargetAnnotation(moabs.DMR.cpgi,col=c("green","gray","white"),main="differential methylation annotation")
-# convert DMR to a dataframe
-moabs.DMR.df <- as.data.frame(moabs.DMR)
 
-cpg_i <- cpgi$CpGi
-cpg_i$name = gene.parts$TSSes$name  
-cpg_i$ID <- mapping[cpg_i$name, "ID"]
+# MOABS DMR overlapping with genes and flanking regions
+moabs.DMR.genes <- annotateWithFeatureFlank(moabs.DMR, genes$Gene,genes$UTR,
+                                           feature.name="Gene",flank.name="UTR", intersect.chr = TRUE)
+genomation::plotTargetAnnotation(moabs.DMR.genes,
+                                 col=c("green","gray","white"),main="DMRs overlapped with genes")
+
+
 moabs.DMR.in.cgpi <- moabs.DMR.TSS[which(slot(moabs.DMR.cpgi, "members")[, 1] > 0), ] # not correct because moabs.DMR.cpgi has longer length than moabs.DMR.TSS
 moabs.DMR.in.cgpi$meth.diff <- as.data.frame(moabs.DMR)[moabs.DMR.in.cgpi$target.row, "meth.diff"]
 plot(moabs.DMR.in.cgpi$meth.diff, moabs.DMR.in.cgpi$logFC, cex=1, pch = 20, 
      col= "blue", xlab = "Methylation Difference", ylab = "Log Fold Change")
+
+# Plot longest MOABS DMRs
+moabs.longDMR <- subset(moabs.DMR.df, width > 1000)
+colnames(moabs.longDMR)[1] <- "chr"
+showOneDMR(moabs.longDMR[8, ], BSobj)
+
 # get methylation Diff data for a set of ids
 getMethDiff_for_Ids <- function(methDiff, diffTSS, ids) {
   diffTSS.sel <- diffTSS[diffTSS$ID %in% ids, ]
@@ -116,15 +178,15 @@ biomine85 <- read.table("../v2/biominer_genes.txt", header=TRUE, sep="\t", as.is
 biomine85.DMR.mean <- plot_DMR_and_LFC(moabs.DMR, moabs.DMR.TSS, biomine85$ID)
 
 # Plot LogFC vs. methylation diff for differentially expressed (DE) genes
-annot.DE <- read.csv("../../gene_expression/Ehux_1516_v_217/Jan2019/output/DE_E1516_vs_E217.annot.txt", 
+annot.DE <- read.csv("../../gene_expression/Ehux_1516_v_217/Jan2019/output/DE_E1516_vs_E217_FDR0.05.annot.txt", 
                      header = TRUE, row.names = 1, sep="\t")
 DE_ids <- intersect(moabs.DMR.TSS$ID, rownames(annot.DE))
 DE.DMR.TSS <- plotMethyl_and_LFC(moabs.DMR, moabs.DMR.TSS, DE_ids)
 DE.DMR.mean <- aggregate_DMR(DE.DMR.TSS)
 DE.DMR.mean <- plot_Mean_Meth_Diff_and_LFC(DE.DMR.mean)
 DE.DMR.mean$Description <- annot.DE[as.character(DE.DMR.mean$ID), "Description"]
-DE.DMR.mean.up <- subset(DE.DMR.mean, logFC > 0)
-DE.DMR.mean.down <- subset(DE.DMR.mean, logFC < 0)
+DE.DMR.mean.up <- subset(DE.DMR.mean, LFC > 0)
+DE.DMR.mean.down <- subset(DE.DMR.mean, LFC < 0)
 #write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
 
 # Retrieve the DMRs overlapped with promoter regions
@@ -148,6 +210,7 @@ ehux.DMR.TSS <- plotMethyl_and_LFC(moabs.DMR, moabs.DMR.TSS, moabs.DMR.TSS$ID)
 ehux.DMR.mean <- aggregate_DMR(ehux.DMR.TSS)
 ehux.DMR.mean <- plot_Mean_Meth_Diff_and_LFC(ehux.DMR.mean)
 
+# Plot MOABS DMR near a selected gene
 t <- plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "233823", methDiff = myDiff10)
 plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "233304", methDiff = myDiff.DSS)
 plot_DMR_Gviz(moabs.DMR, moabs.DMR.TSS, "193771", methDiff = myDiff.DSS)

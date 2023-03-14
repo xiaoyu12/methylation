@@ -1,2 +1,7 @@
 /*.RData
 .Rproj.user
+.*
+__pycache*
+*/*.RData
+*/.*
+*/*/*.RData

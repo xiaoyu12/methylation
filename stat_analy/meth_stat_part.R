@@ -66,12 +66,13 @@ colnames(m_data)[20] <- "loc"
 
 # Bayesian model for differentially methylated sites
 # process the first 1000 CpG and build the model
-d <- m_data[1:1000, ]
+batch = 1000    # batch size set to be 1000
+d <- m_data[1:batch, ]
 d <- reshape_data(d)
 dat <- list(
   N = d$coverage,     # number of coverage
   C = d$numCs,        # number of Cs
-  L = rep(1:1000, 5),          # loci number
+  L = rep(1:batch, 5),          # loci number
   S = as.integer(d$sample),  # sample number, 1 - 5
   T = ifelse(d$treat == 0, 1, 2)  # treatment 1: EH1516, 2: E217
 )
@@ -90,12 +91,12 @@ m_DMC_model <- stan_model(model_code=m_DMC_code, verbose=FALSE)
 
 #dmc <- data.frame(matrix(ncol=3, nrow=0))
 #colnames(dmc) <- c("m1", "m2", "dmc")
-for (i in 2:ceiling(nr/1000)) {
+for (i in 2:ceiling(nr/batch)) {
   print(paste0("processing block ", i))  
-  d <- m_data[(i*1000-999):(i*1000), ]
+  d <- m_data[((i-1)*batch+1):(i*batch), ]
   print(dim(d))
-  nval = min(1000, nr-(i-1)*1000);    #number of valid entries in the block
-  if (nval < 1000) {
+  nval = min(batch, nr-(i-1)*batch);    #number of valid entries in the block
+  if (nval < batch) {
     d[is.na(d)] <- 0        # convert NA into 0
   }
   # reshape the data
@@ -104,7 +105,7 @@ for (i in 2:ceiling(nr/1000)) {
   dat <- list(
     N = d$coverage,     # number of coverage
     C = d$numCs,        # number of Cs
-    L = rep(1:1000, 5),          # loci number
+    L = rep(1:batch, 5),          # loci number
     S = as.integer(d$sample),  # sample number, 1 - 5
     T = ifelse(d$treat == 0, 1, 2)  # treatment 1: EH1516, 2: E217
   )

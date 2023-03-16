@@ -61,7 +61,7 @@ ggplot(meth.chr1) + geom_smooth(mapping=aes(x = , y = ))
 myDiff.DSS <- calculateDiffMethDSS(meth, mc.cores = 4)
 sigDiff.DSS <- getMethylDiff(myDiff.DSS, difference = 25, qvalue = 0.01)
 
-# meth10 has a min coverage of 3 for each sample
+# meth10 has a min coverage of 10 for each sample
 meth10 <- unite(filterByCoverage(methobj, lo.count = 10))
 getCorrelation(meth10, plot = FALSE)
 clusterSamples(meth10, dist="correlation", plot=TRUE)

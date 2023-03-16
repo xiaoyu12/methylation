@@ -177,3 +177,9 @@ moabs.Uniq <- dmc_data_all[countOverlaps(dmc_data_all, moabs.Uniq) ==1, ]
 
 # The DMCs in this analysis but not in MOABS
 dmcs.uniq <- dmcs[countOverlaps(dmcs.gr, moabs.DMC) == 0, ]
+
+# The DMCs in DSS analysis
+load("RData/dss.DMC.RData") 
+
+# DMCs in methylKit analysis
+load("RData/methtylKit.DMC.RData")

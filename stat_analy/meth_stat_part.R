@@ -41,7 +41,7 @@ reshape_data <- function(meth_data) {
 }
 
 # sample posterior and determine differentially methylated C's (DMCs)
-calc_DMCs <- function(model, level=0.95) {
+calc_DMCs <- function(model, level=0.99) {
   post <- extract.samples(model)
   # count the samples with higher a values in treatment 1 vs. treatment 2
   x <- apply(post$a[, , 1]-post$a[, , 2], 2, function (x) sum(ifelse(x > 0, 1, 0)))
@@ -56,7 +56,7 @@ calc_DMCs <- function(model, level=0.95) {
   m2 <- sapply(m2, inv_logit)
   z <- sapply(m1-m2, function(i) abs(i) > 0.3)
   y <- y & z
-  return (data.frame(m1=m1, m2=m2, dmc=y))
+  return (data.frame(m1=m1, m2=m2, pval=x, dmc=y))
 }
 
 m_data <- d

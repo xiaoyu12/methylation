@@ -1,3 +1,9 @@
+###############################################################################
+# This script analyze the relation of differentially expressed genes (DEGs) with 
+# DMCs in the their gene, promoter
+# and upstream regions 
+#
+###############################################################################
 library(rethinking)
 library(tidyverse)
 
@@ -9,7 +15,7 @@ gene_regions
 # remove duplicates in gene_regions
 gene_regions_uq <- gene_regions %>% distinct(ID, .keep_all = TRUE)
 # load gene expr data from Bayesian analysis
-load("./stat_analy/deg.RData")
+load("./RData/deg.RData")
 
 #fix col names
 colnames(deg_data)[8:9] <- c("expr_base", "std")
@@ -17,13 +23,14 @@ colnames(deg_data)[14:15] <- c("logfc", "std.1")
 # merge gene_regions with DEG data
 gene_data <- merge(gene_regions_uq, deg_data, by = "ID", no.dups=TRUE)
 
-load("./stat_analy/dmc.RData")
+load("./RData/dmc.RData")
 # Make a list of meth data, separate by chr 
 #dmc_data_list <- list()
 #for(chr in  unique(dmc_data_all$chr)) {
 #  dmc_data_list[[chr]] <- dmc_data_all[dmc_data_all$chr == chr, ]
 #}
-load("./stat_analy/dmc_list.RData")
+# load the meth data list from file
+load("../stat_analy/dmc_list.RData")
 # Get meth data in one gene region
 meth_in_region <- function(gr) {
   nr <- nrow(gr)

@@ -136,10 +136,10 @@ dmc_data <- cbind(m_data, dmc)
 # dens(inv_logit(post$a[, k, 1]) - inv_logit(post$a[, k, 2]))
 
 # Merge the meth stat partitions 
-load("dmc_p_1.RData")
+load("./part_data/dmc_p_1.RData")
 dmc_data_all <- dmc_data
 for (i in 2:15) {
-  file_name <- paste0("dmc_p_",i,".RData")
+  file_name <- paste0("./part_data/dmc_p_",i,".RData")
   load(file_name)
   dmc_data_all <- rbind(dmc_data_all, dmc_data)
 }
@@ -163,3 +163,17 @@ for(i in 1:(length(start_idx)-1)) {
   dmc_data_list[[chr]] <- dmc_data_all[start:end, ]
 }
 save(dmc_data_list, file="dmc_list.RData")
+
+
+# Compare the DMCs with those of MOABS
+moabs.DMC <- readMOABS_DMR_bedfile("./data/dmc_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
+dmcs.gr <- as(dmcs, "GRanges")
+# count the number of overlapped DMCs
+sum(countOverlaps(dmcs.gr, moabs.DMC))
+
+# The DMCs in MOABS but not in this analysis
+moabs.Uniq <- moabs.DMC[countOverlaps(moabs.DMC, dmcs.gr) == 0, ]
+moabs.Uniq <- dmc_data_all[countOverlaps(dmc_data_all, moabs.Uniq) ==1, ]
+
+# The DMCs in this analysis but not in MOABS
+dmcs.uniq <- dmcs[countOverlaps(dmcs.gr, moabs.DMC) == 0, ]

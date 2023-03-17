@@ -1,9 +1,11 @@
 # Partition the large data into 10 (or more) partitions to run in parallel
+library(methylKit)
+
 load("RData/meth.RData")
-meth_data <- getData(meth1)
+meth_data <- getData(meth)
 nrow <- nrow(meth_data)
 
-npar <- 15
+npar <- 16
 psize <- ceiling(nrow / npar)
 par <- seq(0, nrow, psize)
 par <- c(par, nrow)

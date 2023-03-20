@@ -150,7 +150,7 @@ test_Expr_DMC <- function(d) {
       # f[S]: log sample factor, e[G] log express of gene in treatment 1,
       log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
       
-      vector[6]: f ~ normal(0, 0.5),
+      vector[6]: f ~ normal(0, 0.2),
       vector[ng]: e ~ normal(0, 3),
       bDP ~ normal(0, 1.5),
       bDN ~ normal(0, 1.5),
@@ -166,6 +166,7 @@ precis(m_Expr_DMC)
 # Multi-level Model for gene expression and DMCs
 # Only consider genes with non-zero DMCs
 d <- gene_data_dmc[, 1:29] %>% filter (dmc_pos > 0 | dmc_neg > 0)
+d <- d[1:1000,]
 #d <- gene_data_dmc[, 1:29]
 d$id <- 1:nrow(d)
 d <- d[, c(1,8:13, 2:7, 26:30)]
@@ -197,15 +198,15 @@ m_ML_Expr_DMC_new <- ulam(
     E ~ dgampois(lambda, phi),
     
     log(lambda) <- e_bar + f[S] + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
-    vector[6]: f ~ normal(0, 0.5),
+    vector[6]: f ~ normal(0, 0.2),
     vector[ng]: e ~ normal(0, 3),
     phi ~ exponential(1),
     ebar ~ normal(0, 1.5),
-    sigma ~ expoential(1),
+    sigma ~ exponential(1),
     vector[ng]: bDP ~ normal(bDP_bar, bDP_sigma),
     vector[ng]: bDN ~ normal(bDN_bar, bDN_sigma),
-    c(bDP_bar, bDN_bar) <- normal(0, 1.5),
-    c(bDP_sigma, bDN_sigma) <- exponential(1)
+    c(bDP_bar, bDN_bar) ~ normal(0, 1.5),
+    c(bDP_sigma, bDN_sigma) ~ exponential(1)
   ), data = dat, chains = 4, cores = 4
 )
 precis(m_ML_Expr_DMC)

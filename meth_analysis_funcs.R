@@ -103,7 +103,7 @@ getFeatureMethyl <- function(m.obj, g.features, s.names, lo.count=100) {
     t <- t[!duplicated(t$ID), ]    # Remove duplicates due to alternative splicing
     t <- t[t$coverage >= lo.count, ]
     t$beta <- t$numCs / t$coverage
-    t$m <- log2((t$numCs+1)/(t$numTs+1))
+    t$m <- log2((t$numCs+1)/(t$numTs+1))    # piror of beta is 0.2
     rownames(t) <- t$ID
     meth.prom[[i]] <- t
   }

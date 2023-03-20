@@ -9,7 +9,7 @@ library(tidyverse)
 
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
-#
+# set up gene_regions in ../methyl_by_regions.R
 gene_regions
 
 # remove duplicates in gene_regions
@@ -30,7 +30,7 @@ load("./RData/dmc.RData")
 #  dmc_data_list[[chr]] <- dmc_data_all[dmc_data_all$chr == chr, ]
 #}
 # load the meth data list from file
-load("../stat_analy/dmc_list.RData")
+load("./RData/dmc_list.RData")
 # Get meth data in one gene region
 meth_in_region <- function(gr) {
   nr <- nrow(gr)
@@ -53,29 +53,41 @@ meth_in_region <- function(gr) {
   return(m_count)
 }
 
+# count # of methyl sites in gene regions
 x <- meth_in_region(gene_data[, 2:4])
 gene_data <- cbind(gene_data, x)
 # select genes with non-zero Cpg sites
-gene_data_dmc <-gene_data[gene_data$ncpg >0, ]
+gene_data_dmc <- gene_data[gene_data$ncpg >0, ]
 dens((gene_data_dmc$dmc_neg+gene_data_dmc$dmc_pos) *1000 / gene_data_dmc$width)
+plot(gene_data_dmc$dmc_neg/gene_data_dmc$ncpg, gene_data_dmc$dmc_pos/gene_data_dmc$ncpg)
 x <- (gene_data_dmc$dmc_neg) / gene_data_dmc$ncpg
 which (x == max(x))
 x2 <- log(gene_data_dmc$dmc_pos +1) 
 
-# filter out genes with at least 3 zero counts
+# Only keep expressed genes that have a least 3 nonzero counts in expression data 
 gene_data_dmc <- gene_data_dmc %>% filter(rowSums(gene_data_dmc[, 8:13] > 0) >= 3)
 
 # get average methylation level per gene by strains
+load("RData/methobj.RData")
+sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
 p <- getFeatureMethyl(methobj, as(gene_data_dmc, "GRanges"), sample.ids, lo.count = 3)
 m <- p$m[as.character(gene_data_dmc$ID), ] # reorder the data by gene_data_dmc ID's
 m1 <- rowMeans(m[, 1:2])        # average m values of EH1516
 m2 <- rowMeans(m[, 3:5])
 ng <- length(m1)
 s <- standardize(c(m1, m2))
-m1 <- s[1:ng]
-m2 <- s[(ng+1):(2*ng)]
-gene_data_dmc$m1 <- m1
-gene_data_dmc$m2 <- m2
+gene_data_dmc$m1 <- s[1:ng]
+gene_data_dmc$m2 <- s[(ng+1):(2*ng)]
+
+
+b <- p$beta[as.character(gene_data_dmc$ID), ]
+b1 <- rowMeans(b[, 1:2])
+b2 <- rowMeans(b[, 3:5])
+s <- normalize(c(b1, b2))
+gene_data_dmc$b1 <- s[1:ng]
+gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
+
+
 
 # Test with a sample of gene_data_dmc
 # colnames(gene_data_dmc)[1] <- "gid"
@@ -126,6 +138,8 @@ test_Expr_DMC <- function(d) {
     XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
     XDP = normalize(log(d_reshaped$dmc_pos + 1)),   # normalized log number of dmc_pos sites
     XDN = normalize(log(d_reshaped$dmc_neg + 1)),   # normalized log number of dmc_neg sites
+    #XDP = normalize(d_reshaped$dmc_pos / d_reshaped$ncpg),
+    #XDN = normalize(d_reshaped$dmc_neg / d_reshaped$ncpg),
     ng = max(d_reshaped$id)
   )
   
@@ -136,7 +150,7 @@ test_Expr_DMC <- function(d) {
       # f[S]: log sample factor, e[G] log express of gene in treatment 1,
       log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
       
-      vector[6]: f ~ normal(0, 0.1),
+      vector[6]: f ~ normal(0, 0.5),
       vector[ng]: e ~ normal(0, 3),
       bDP ~ normal(0, 1.5),
       bDN ~ normal(0, 1.5),
@@ -146,25 +160,57 @@ test_Expr_DMC <- function(d) {
   return(m_Expr_DMC)
 }
 
-m_Expr_DMC <- test_Expr_DMC(gene_data_dmc)
+m_Expr_DMC <- test_Expr_DMC(gene_data_dmc[, 1:29])
 precis(m_Expr_DMC)
 
 # Multi-level Model for gene expression and DMCs
-m_ML_Expr_DMC <- ulam(
+# Only consider genes with non-zero DMCs
+d <- gene_data_dmc[, 1:29] %>% filter (dmc_pos > 0 | dmc_neg > 0)
+#d <- gene_data_dmc[, 1:29]
+d$id <- 1:nrow(d)
+d <- d[, c(1,8:13, 2:7, 26:30)]
+d_reshaped <- reshape_data(d, 6, strain)
+d_reshaped$ncpg <- rep(d$ncpg, 6)
+d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
+d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
+d_reshaped$DE <- rep(d$DE, 6)
+
+e_bar = log(median(d_reshaped$expr))
+# build the dat list for MCMC
+dat <- list (
+  G = d_reshaped$id,
+  E = d_reshaped$expr,
+  S = d_reshaped$sample,
+  T = d_reshaped$strain,
+  W = standardize(log(rep(d$width, 6))),
+  e_bar = rep(e_bar, nrow(d_reshaped)),
+  XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
+  XDP = normalize(log(d_reshaped$dmc_pos + 1)),   # normalized log number of dmc_pos sites
+  XDN = normalize(log(d_reshaped$dmc_neg + 1)),   # normalized log number of dmc_neg sites
+  #XDP = normalize(d_reshaped$dmc_pos / d_reshaped$ncpg),
+  #XDN = normalize(d_reshaped$dmc_neg / d_reshaped$ncpg),
+  ng = max(d_reshaped$id)
+)
+
+m_ML_Expr_DMC_new <- ulam(
   alist (
     E ~ dgampois(lambda, phi),
     
-    log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
-    vector[6]: f ~ normal(0, 0.1),
-    vector[ng]: e ~ normal(ebar, sigma),
+    log(lambda) <- e_bar + f[S] + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
+    vector[6]: f ~ normal(0, 0.5),
+    vector[ng]: e ~ normal(0, 3),
+    phi ~ exponential(1),
     ebar ~ normal(0, 1.5),
-    sigma ~ dexp(1),
-    bDP ~ normal(0, 1.5),
-    bDN ~ normal(0, 1.5),
-    phi ~ dexp(1)
+    sigma ~ expoential(1),
+    vector[ng]: bDP ~ normal(bDP_bar, bDP_sigma),
+    vector[ng]: bDN ~ normal(bDN_bar, bDN_sigma),
+    c(bDP_bar, bDN_bar) <- normal(0, 1.5),
+    c(bDP_sigma, bDN_sigma) <- exponential(1)
   ), data = dat, chains = 4, cores = 4
 )
 precis(m_ML_Expr_DMC)
+
+precis(m_ML_Expr_DMC_new)
 
 # Data list using average methylation level as input
 dat <- list (

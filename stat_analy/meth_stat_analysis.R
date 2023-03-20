@@ -6,7 +6,7 @@
 #To avoid recompilation of unchanged Stan programs, we recommend calling
 #rstan_options(auto_write = TRUE)
 
-load("meth.RData")
+load("RData/meth.RData")
 library(rethinking)
 library(tidyverse)
 
@@ -57,6 +57,17 @@ m_DMC <- ulam(
     matrix[L, T]: a ~ normal(0, 1.5)
   ), data=dat, chains=4, cores=4
 )
+
+# Try to model methylation at loc using a beta-binomial distribution.
+# The power was lower because of the dispersion
+m_DMC_beta <- ulam(alist(
+  C ~ dbetabinom(N, pbar, theta),
+  logit(pbar) <- a[L, T],
+  matrix[L, T]: a ~ normal(0, 1.5),
+  transpars> theta <<- phi + 10,
+  phi ~ dexp(0.1)
+), data=dat, chains=4, cores=4)
+
 precis(m_DMC, depth=3)
 m_DMC_code <- stancode(m_DMC)
 m_DMC_model <- stan_model(model_code=m_DMC_code, verbose=FALSE)
@@ -64,7 +75,7 @@ res <- sampling(m_DMC_model, data=dat, cores=4, verbose=FALSE) # data must be th
 x <- precis(res, depth=3)
 
 # sample posterior and determine differentially methylated C's (DMCs)
-calc_DMCs <- function(model, level=0.95) {
+calc_DMCs <- function(model, level=0.99, diff=0.25) {
   post <- extract.samples(model)
   # count the samples with higher a values in treatment 1 vs. treatment 2
   x <- apply(post$a[, , 1]-post$a[, , 2], 2, function (x) sum(ifelse(x > 0, 1, 0)))
@@ -77,7 +88,7 @@ calc_DMCs <- function(model, level=0.95) {
   m1 <- sapply(m1, inv_logit)
   m2 <- apply(post$a[, , 2], 2, mean)
   m2 <- sapply(m2, inv_logit)
-  z <- sapply(m1-m2, function(i) abs(i) > 0.3)
+  z <- sapply(m1-m2, function(i) abs(i) > diff)
   y <- y & z
   return (data.frame(m1=m1, m2=m2, dmc=y))
 }
@@ -89,12 +100,13 @@ m_data <- cbind(m_data, 1:nr)
 colnames(m_data)[20] <- "loc"
 dmc <- data.frame(matrix(ncol=3, nrow=0))
 colnames(dmc) <- c("m1", "m2", "dmc")
-for (i in 1:ceiling(nr/1000)) {
+batch = 10
+for (i in 1:ceiling(nr/batch)) {
   print(paste0("processing block ", i))  
-  d <- m_data[(i*1000-999):(i*1000), ]
+  d <- m_data[((i-1)*batch+1):(i*batch), ]
   print(dim(d))
-  nval = min(1000, nr-(i-1)*1000);    #number of valid entries in the block
-  if (nval < 1000) {
+  nval = min(batch, nr-(i-1)*batch);    #number of valid entries in the block
+  if (nval < batch) {
     d[is.na(d)] <- 0        # convert NA into 0
   }
   # reshape the data
@@ -103,7 +115,7 @@ for (i in 1:ceiling(nr/1000)) {
   dat <- list(
     N = d$coverage,     # number of coverage
     C = d$numCs,        # number of Cs
-    L = rep(1:1000, 5),          # loci number
+    L = rep(1:batch, 5),          # loci number
     S = as.integer(d$sample),  # sample number, 1 - 5
     T = ifelse(d$treat == 0, 1, 2)  # treatment 1: EH1516, 2: E217
   )
@@ -143,7 +155,9 @@ for (i in 2:15) {
   load(file_name)
   dmc_data_all <- rbind(dmc_data_all, dmc_data)
 }
-save(dmc_data_all, file="dmc.RData")
+# set confidence interval for each loc
+#dmc_data_all$pval <- rowMin(cbind(dmc_data_all$pval, 1-dmc_data_all$pval))
+
 # split dmc_data_all into a named list index by chr
 start_idx <- list(1)
 cur_chr <- "chr1"
@@ -164,22 +178,42 @@ for(i in 1:(length(start_idx)-1)) {
 }
 save(dmc_data_list, file="dmc_list.RData")
 
+# DMCS are selected as site withd diff > 0.25 and pval = 0.01
+dmcs <- dmc_data_all %>% filter (abs(m1-m2) > 0.25 & pval < 0.01)
+nrow(dmcs %>% filter (m1 < m2))
+nrow(dmcs %>% filter (m1 > m2))
+
 
 # Compare the DMCs with those of MOABS
 moabs.DMC <- readMOABS_DMR_bedfile("./data/dmc_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
-dmcs.gr <- as(dmcs, "GRanges")
+# only consider sites with coverage >=3 in all samples
+moabs.DMC <- as.data.frame(moabs.DMC)
+colnames(moabs.DMC)[1] = "chr"
+moabs.dmcs <- merge(dmc_data_all, moabs.DMC, by=c("chr", "start", "end"), sort=FALSE)
+moabs.dmcs <- moabs.dmcs[, 1:24]
+nrow(moabs.dmcs %>% filter (m1 < m2))
+nrow(moabs.dmcs %>% filter (m1 > m2))
+save(dmcs, moabs.dmcs, file="RData/moabs.dmcs.RData")
 # count the number of overlapped DMCs
-sum(countOverlaps(dmcs.gr, moabs.DMC))
+sum(countOverlaps(as(moabs.dmcs, "GRanges"), as(dmcs, "GRanges"))) #/ nrow(moabs.dmcs)
 
 # The DMCs in MOABS but not in this analysis
-moabs.Uniq <- moabs.DMC[countOverlaps(moabs.DMC, dmcs.gr) == 0, ]
-moabs.Uniq <- dmc_data_all[countOverlaps(dmc_data_all, moabs.Uniq) ==1, ]
+moabs.Uniq <- moabs.dmcs[countOverlaps(as(moabs.dmcs, "GRanges"), as(dmcs, "GRanges")) == 0, ]
+dmcs.Uniq <- dmcs[countOverlaps(as(dmcs, "GRanges"), as(moabs.dmcs, "GRanges")) == 0, ]
 
-# The DMCs in this analysis but not in MOABS
-dmcs.uniq <- dmcs[countOverlaps(dmcs.gr, moabs.DMC) == 0, ]
+# Set the dmc flag to TRUE if it's in moabs.dmc
+dmc_data_all$dmc <- countOverlaps(as(dmc_data_all, "GRanges"), as(moabs.dmcs, "GRanges")) ==1 
+# recalculate m1 & m2 using coverage and Cs
+dmc_data_all$m1 <- (dmc_data_all$numCs1+dmc_data_all$numCs2) / (dmc_data_all$coverage1+dmc_data_all$coverage2)
+dmc_data_all$m2 <- (dmc_data_all$numCs3+dmc_data_all$numCs4+dmc_data_all$numCs5) / 
+  (dmc_data_all$coverage3+dmc_data_all$coverage4+dmc_data_all$coverage5)
+save(dmc_data_all, file="RData/dmc.RData")
+
+# DMCs in methylKit analysis
+load("RData/methtylKit.DMC.RData")
+sum(countOverlaps(as(methylKit.DMC, "GRanges"), as(moabs.dmcs, "GRanges"))) / nrow(methylKit.DMC)
 
 # The DMCs in DSS analysis
 load("RData/dss.DMC.RData") 
 
-# DMCs in methylKit analysis
-load("RData/methtylKit.DMC.RData")
+

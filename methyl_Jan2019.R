@@ -72,7 +72,7 @@ sigDiff10 <- getMethylDiff(myDiff10, difference = 25, qvalue = 0.01)
 sigDiff10.DSS <- getMethylDiff(myDiff10.DSS, difference = 25, qvalue = 0.01)
 
 # Read mapping from rna* to gene ID
-mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
+mapping <- read.table("./genbank_mapping.txt", row.names = 1)
 colnames(mapping) <- c("gene", "ID")
 
 # Read Ehux gene structures

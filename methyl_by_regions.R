@@ -8,11 +8,16 @@ getPromoterRegions <- function(up = 1000, down = 1000, bed_file="./Ehux_genbank.
 }
 
 # set up regions of interest
+library(genomation)
+mapping <- read.table("./genbank_mapping.txt", row.names = 1)
+colnames(mapping) <- c("gene", "ID")
+gene.parts <- readTranscriptFeatures("./Ehux_genbank.bed", remove.unusual = FALSE, unique.prom = FALSE)
+
 genes = readFeatureFlank("./Ehux_genbank.bed", feature.flank.name=c("Gene","UTR"))
 genes$Gene$name <- gene.parts$TSSes$name
 gene_regions <- as.data.frame(genes$Gene)
 gene_regions$name = gene.parts$TSSes$name  
-gene_regions$ID <- mapping[geneFeatures$name, "ID"]
+gene_regions$ID <- mapping[gene_regions$name, "ID"]
 
 up2000 <- getPromoterRegions(up = 2000, down = 0)
 up1000 <- getPromoterRegions(up = 1000, down = 0)

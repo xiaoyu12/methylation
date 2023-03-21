@@ -161,6 +161,7 @@ for (i in 2:15) {
 # split dmc_data_all into a named list index by chr
 start_idx <- list(1)
 cur_chr <- "chr1"
+# find the start index of each chr
 for(i in 2:nrow(dmc_data_all)) {
   chr_i <- dmc_data_all[i, "chr"]
   if(chr_i != cur_chr) {

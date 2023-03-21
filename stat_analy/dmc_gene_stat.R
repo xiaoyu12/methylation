@@ -173,7 +173,7 @@ test_Expr_DMC <- function(d) {
   return(m_Expr_DMC)
 }
 
-m_Expr_DMC_new2 <- test_Expr_DMC(gene_data_dmc[, 1:29])
+m_Expr_DMC <- test_Expr_DMC(gene_data_dmc[, 1:29])
 precis(m_Expr_DMC)
 
 # Multi-level Model for gene expression and DMCs
@@ -235,8 +235,9 @@ dat <- list (
   S = d_reshaped$sample,
   T = d_reshaped$strain,
   e_bar = rep(e_bar, nrow(d_reshaped)),
-  m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
-  m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
+  #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
+  #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
+  dm = c(rep(d$m1-d$m1, 3), rep(d$m2-d$m1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
   ng = max(d_reshaped$id)
 )
 

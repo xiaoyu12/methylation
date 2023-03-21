@@ -178,12 +178,12 @@ precis(m_Expr_DMC)
 
 # Multi-level Model for gene expression and DMCs
 # Only consider genes with non-zero DMCs
-d <- gene_data_dmc[, 1:29] %>% filter (dmc_pos > 0 | dmc_neg > 0)
+d <- gene_data_dmc %>% filter (dmc_pos > 0 | dmc_neg > 0)
 d <- d[1:1000,]
-#d <- gene_data_dmc[, 1:29]
-d$id <- 1:nrow(d)
-d <- d[, c(1,8:13, 2:7, 26:30)]
-d_reshaped <- reshape_data(d, 6, strain)
+d <- gene_data_dmc
+d <- add_column(d, id = 1:nrow(d), .after = 29)
+#d <- d[, c(1,8:13, 2:7, 26:30)]
+d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
 d_reshaped$ncpg <- rep(d$ncpg, 6)
 d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
 d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
@@ -241,7 +241,7 @@ dat <- list (
 )
 
 # Model the relation between gene expression and change of average methylation values
-m_Expr_M <- ulam(
+m_Expr_M2 <- ulam(
   alist (
     E ~ dgampois(lambda, phi),
     # f[S]: log sample factor, e[G] log express of gene in treatment 1,

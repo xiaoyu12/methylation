@@ -61,11 +61,33 @@ meth_in_region <- function(gr) {
   return(m_count)
 }
 
+get_DMC_in_regions <- function(regions) {
+  data <- merge(regions, deg_data, by="ID", no.dups=TRUE)
+  # count # of methyl sites in gene regions
+  x <- meth_in_region(data[, 2:4])
+  data <- cbind(data, x)
+  # selec regions with non-zero CpG sites
+  data_dmc <- data[data$ncpg>0, ]
+  # Only keep expressed genes that have a least 3 nonzero counts in expression data 
+  data_dmc <- data_dmc %>% filter(rowSums(data_dmc[, 8:13] > 0) >= 3)
+  # get average methylation level per region by strains
+  load("RData/methobj.RData")
+  sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
+  p <- getFeatureMethyl(methobj, as(data_dmc, "GRanges"), sample.ids, lo.count = 3)
+  m <- p$m[as.character(data_dmc$ID), ]      # reorder the data by gene_data_dmc ID's
+  m1 <- rowMeans(m[, 1:2])                   # average m values of EH1516
+  m2 <- rowMeans(m[, 3:5])
+  data_dmc$m1 <- m1
+  data_dmc$m2 <- m2
+  
+  return(data_dmc)
+}
+
 # count # of methyl sites in gene regions
 x <- meth_in_region(gene_data[, 2:4])
 gene_data <- cbind(gene_data, x)
 # select genes with non-zero Cpg sites
-gene_data_dmc <- gene_data[gene_data$ncpg >0, ]
+gene_data_dmc <- gene_data[gene_data$ncpg>0, ]
 dens((gene_data_dmc$dmc_neg+gene_data_dmc$dmc_pos) *1000 / gene_data_dmc$width)
 plot(gene_data_dmc$dmc_neg/gene_data_dmc$ncpg, gene_data_dmc$dmc_pos/gene_data_dmc$ncpg)
 x <- (gene_data_dmc$dmc_neg) / gene_data_dmc$ncpg
@@ -88,6 +110,9 @@ m2 <- rowMeans(m[, 3:5])
 #gene_data_dmc$m2 <- s[(ng+1):(2*ng)]
 gene_data_dmc$m1 <- m1
 gene_data_dmc$m2 <- m2
+
+# Get methylation data in gene regions
+gene_data_dmc <- get_DMC_in_regions(gene_regions_uq)
 
 b <- p$beta[as.character(gene_data_dmc$ID), ]
 b1 <- rowMeans(b[, 1:2])
@@ -127,7 +152,7 @@ reshape_data <- function(d, nsample, strain) {
   return (d_reshaped)
 }
 
-# Test the relation between pos and neg DMCs with the gene expression
+# Test the relation between the count of pos and neg DMCs with the gene expression
 test_Expr_DMC <- function(d) {
   d$id <- 1:nrow(d)
   d <- d[, c(1,8:13, 2:7, 26:30)]
@@ -145,7 +170,7 @@ test_Expr_DMC <- function(d) {
     S = d_reshaped$sample,          # sample ID
     T = d_reshaped$strain,          # treatment, i.e. strain = 0 for EH1516, 1 for EH217
     sf = d_reshaped$sf,             # scaling factor
-    W = standardize(log(rep(d$width, 6))),          # gene width
+    #W = standardize(log(rep(d$width, 6))),          # gene width
     e_bar = rep(e_bar, nrow(d_reshaped)),           # global mean expressionb
     XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
     XDP = normalize(log(d_reshaped$dmc_pos + 1)),   # normalized log number of dmc_pos sites
@@ -174,7 +199,13 @@ test_Expr_DMC <- function(d) {
 }
 
 m_Expr_DMC <- test_Expr_DMC(gene_data_dmc[, 1:29])
-precis(m_Expr_DMC)
+
+m_Expr_DMC_gt_0 <- test_Expr_DMC(gene_data_dmc[, 1:29] %>% filter (dmc_pos > 0 | dmc_neg >0))
+precis(m_Expr_DMC, depth=2, prob=0.95,
+       pars = c("f[1]", "f[2]", "f[3]", "f[4]", "f[5]", "f[6]"))
+precis(m_Expr_DMC_gt_0)
+precis(m_Expr_DMC_gt_0, depth=2, prob=0.95,
+       pars = c("f[1]", "f[2]", "f[3]", "f[4]", "f[5]", "f[6]"))
 
 # Multi-level Model for gene expression and DMCs
 # Only consider genes with non-zero DMCs
@@ -228,35 +259,54 @@ precis(m_ML_Expr_DMC)
 
 precis(m_ML_Expr_DMC_new)
 
-# Data list using average methylation level as input
-dat <- list (
-  G = d_reshaped$id,
-  E = d_reshaped$expr,
-  S = d_reshaped$sample,
-  T = d_reshaped$strain,
-  e_bar = rep(e_bar, nrow(d_reshaped)),
-  #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
-  #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
-  dm = c(rep(d$m1-d$m1, 3), rep(d$m2-d$m1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
-  ng = max(d_reshaped$id)
-)
 
-# Model the relation between gene expression and change of average methylation values
-m_Expr_M2 <- ulam(
-  alist (
-    E ~ dgampois(lambda, phi),
-    # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-    log(lambda) <- e_bar + f[S] + e[G] + bM * (m2 - m1),
-    
-    vector[6]: f ~ normal(0, 0.1),
-    vector[ng]: e ~ normal(0, 3),
-    bM ~ normal(0, 1.5),
-    phi ~ dexp(1)
-  ), data = dat, chains=4, cores=4
-)
+test_Expr_Mval <- function(d) {
+  d <- add_column(d, id = 1:nrow(d), .after = 29)
+  #d <- d[, c(1,8:13, 2:7, 26:30)]
+  d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
+  d_reshaped$ncpg <- rep(d$ncpg, 6)
+  d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
+  d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
+  d_reshaped$DE <- rep(d$DE, 6)
+  
+  e_bar = log(median(d_reshaped$expr))
+  
+  # Data list using average methylation level as input
+  dat <- list (
+    G = d_reshaped$id,
+    E = d_reshaped$expr,
+    S = d_reshaped$sample,
+    T = d_reshaped$strain,
+    e_bar = rep(e_bar, nrow(d_reshaped)),
+    #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
+    #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
+    dm = c(rep(d$m1-d$m1, 3), rep(d$m2-d$m1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
+    ng = max(d_reshaped$id)
+  )
+  
+  # Model the relation between gene expression and change of average methylation values
+  m_Expr_M <- ulam(
+    alist (
+      E ~ dgampois(lambda, phi),
+      # f[S]: log sample factor, e[G] log express of gene in treatment 1,
+      log(lambda) <- e_bar + f[S] + e[G] + bM * (m2 - m1),
+      
+      vector[6]: f ~ normal(0, 0.1),
+      vector[ng]: e ~ normal(0, 3),
+      bM ~ normal(0, 1.5),
+      phi ~ dexp(1)
+    ), data = dat, chains=4, cores=4
+  )
+  
+  return(m_Expr_M)
+}
+
+m_Expr_M <- test_Expr_Mval(gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos >0 ))
+
 
 
 # Get DMCs in the promoter regions
+# Set up regions in methyl_by_regions.R
 #promoters <- as.data.frame(gene.parts$promoters)
 #promoters$ID = mapping[promoters$name, "ID"]
 #promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
@@ -274,7 +324,7 @@ which (x == max(x))
 # filter out genes with at least 3 zero counts
 prom_data_dmc <- prom_data_dmc %>% filter(rowSums(prom_data_dmc[, 8:13] > 0) >= 3)
 
-m_Expr_DMC_Prom <- test_Expr_DMC(prom_data_dmc)
+m_Expr_DMC_Prom_gt_0 <- test_Expr_DMC(prom_data_dmc %>% filter (dmc_neg > 0 | dmc_pos > 0))
 
 # Get DMCs in the up2000 regions
 up2000_data <- merge(up2000, deg_data, by="ID", no.dups=TRUE)

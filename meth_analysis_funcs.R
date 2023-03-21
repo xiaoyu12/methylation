@@ -2,9 +2,9 @@
 #library(ggbio)
 
 # Add a column of gene IDs to the Granges or dataframe
-addMapID <- function(ranges) {
-  mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
-  colnames(mapping) <- c("gene", "ID")
+addMapID <- function(ranges, mapping) {
+  #mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
+  #colnames(mapping) <- c("gene", "ID")
   ranges$ID = mapping[ranges$name, "ID"]
   ranges <- as.data.frame(ranges)
   ranges = ranges[!duplicated(ranges$ID), ]    # remove duplicates due to alternative splicing

@@ -1,44 +1,35 @@
 # Get Granges object representing regions upstream and downstream from TSSes with given len
 getPromoterRegions <- function(up = 1000, down = 1000, bed_file="./Ehux_genbank.bed") {
+  library(genomation)
   gene_structs <- readTranscriptFeatures(bed_file, remove.unusual = FALSE,
                                          up.flank = up, down.flank = down, 
                                          unique.prom = FALSE)
-  promoters <- addMapID(gene_structs$promoter)
-  return(promoters)
+  #promoters <- addMapID(gene_structs$promoter, mapping)
+  ranges <- gene_structs$promoter
+  ranges$ID = mapping[ranges$name, "ID"]
+  ranges <- as.data.frame(ranges)
+  ranges = ranges[!duplicated(ranges$ID), ]    # remove duplicates due to alternative splicing
+  # convert back to Granges
+  ranges <- as(ranges, "GRanges")
+  return(ranges)
 }
 
-# set up regions of interest
-library(genomation)
-mapping <- read.table("./genbank_mapping.txt", row.names = 1)
-colnames(mapping) <- c("gene", "ID")
-gene.parts <- readTranscriptFeatures("./Ehux_genbank.bed", remove.unusual = FALSE, unique.prom = FALSE)
-
-genes = readFeatureFlank("./Ehux_genbank.bed", feature.flank.name=c("Gene","UTR"))
-genes$Gene$name <- gene.parts$TSSes$name
-gene_regions <- as.data.frame(genes$Gene)
-gene_regions$name = gene.parts$TSSes$name  
-gene_regions$ID <- mapping[gene_regions$name, "ID"]
-
-up2000 <- getPromoterRegions(up = 2000, down = 0)
-up1000 <- getPromoterRegions(up = 1000, down = 0)
-down2000 <- getPromoterRegions(up = 0, down = 2000)
-promoters <- as.data.frame(gene.parts$promoters)
-promoters$ID = mapping[promoters$name, "ID"]
-promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
-colnames(promoters)[1] <- "chr"
-promoters.gr = as(promoters, 'GRanges')
+# get GRanges representing all scaffolds
+read_scaffold_gr <- function(scaf_len_file="Ehux_genome.fasta.len") {
+  scaffolds <- read.table(scaf_len_file)
+  colnames(scaffolds) <- c("chr", "len")
+  genome_len <- sum(scaffolds$len)
+  rownames(scaffolds) <- scaffolds$chr
+  scaffolds.gr <- scaffolds[, 1:2]
+  scaffolds.gr[, 2] <-1 
+  scaffolds.gr[, 3] <- scaffolds$len
+  colnames(scaffolds.gr) <- c("chr", "start", "end")
+  scaffolds.gr <- as(scaffolds.gr, "GRanges")
+  return(scaffolds.gr)
+}
+scaffold_gr = read_scaffold_gr("data/Ehux_genome.fasta.len")
 
 # trim regions based the starts and ends of scaffolds
-scaffolds <- read.table("Ehux_genome.fasta.len")
-colnames(scaffolds) <- c("chr", "len")
-genome_len <- sum(scaffolds$len)
-rownames(scaffolds) <- scaffolds$chr
-scaffolds.gr <- scaffolds[, 1:2]
-scaffolds.gr[, 2] <-1 
-scaffolds.gr[, 3] <- scaffolds$len
-colnames(scaffolds.gr) <- c("chr", "start", "end")
-scaffolds.gr <- as(scaffolds.gr, "GRanges")
-
 trimRegionByScaffolds <- function(gr) {
   # Get the promoter regions overlapped with the genome
   o = findOverlaps(gr, scaffolds.gr)
@@ -55,7 +46,31 @@ trimRegionByScaffolds <- function(gr) {
   return(gr_trimmed)
 }
 
-promoters.gr <- trimRegionByScaffolds(promoters.gr)
+# set up regions of interest
+library(genomation)
+mapping <- read.table("./genbank_mapping.txt", row.names = 1)
+colnames(mapping) <- c("gene", "ID")
+gene.parts <- readTranscriptFeatures("./Ehux_genbank.bed", remove.unusual = FALSE, unique.prom = FALSE)
+
+genes = readFeatureFlank("./Ehux_genbank.bed", feature.flank.name=c("Gene","UTR"))
+genes$Gene$name <- gene.parts$TSSes$name
+gene_regions <- as.data.frame(genes$Gene)
+gene_regions$name = gene.parts$TSSes$name  
+gene_regions$ID <- mapping[gene_regions$name, "ID"]
+
+up2000 <- getPromoterRegions(up = 2000, down = 0, bed_file = "data/Ehux_genbank.bed")
+up1000 <- getPromoterRegions(up = 1000, down = 0, bed_file = "data/Ehux_genbank.bed")
+down2000 <- getPromoterRegions(up = 0, down = 2000, bed_file = "data/Ehux_genbank.bed")
+promoters <- getPromoterRegions(up=1000, down=1000, bed_file = "data/Ehux_genbank.bed")
+# promoters <- as.data.frame(gene.parts$promoters)
+# promoters$ID = mapping[promoters$name, "ID"]
+# promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
+# colnames(promoters)[1] <- "chr"
+# promoters.gr = as(promoters, 'GRanges')
+
+
+
+promoters <- trimRegionByScaffolds(promoters)
 up2000 <- trimRegionByScaffolds(up2000)
 down2000 <- trimRegionByScaffolds(down2000)
 up1000 <- trimRegionByScaffolds(up1000)

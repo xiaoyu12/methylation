@@ -82,19 +82,19 @@ p <- getFeatureMethyl(methobj, as(gene_data_dmc, "GRanges"), sample.ids, lo.coun
 m <- p$m[as.character(gene_data_dmc$ID), ] # reorder the data by gene_data_dmc ID's
 m1 <- rowMeans(m[, 1:2])        # average m values of EH1516
 m2 <- rowMeans(m[, 3:5])
-ng <- length(m1)
-s <- standardize(c(m1, m2))
-gene_data_dmc$m1 <- s[1:ng]
-gene_data_dmc$m2 <- s[(ng+1):(2*ng)]
-
+#ng <- length(m1)
+#s <- standardize(c(m1, m2))
+#gene_data_dmc$m1 <- s[1:ng]
+#gene_data_dmc$m2 <- s[(ng+1):(2*ng)]
+gene_data_dmc$m1 <- m1
+gene_data_dmc$m2 <- m2
 
 b <- p$beta[as.character(gene_data_dmc$ID), ]
 b1 <- rowMeans(b[, 1:2])
 b2 <- rowMeans(b[, 3:5])
-s <- normalize(c(b1, b2))
-gene_data_dmc$b1 <- s[1:ng]
-gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
-
+#s <- normalize(c(b1, b2))
+#gene_data_dmc$b1 <- s[1:ng]
+#gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
 
 
 # Test with a sample of gene_data_dmc
@@ -160,10 +160,10 @@ test_Expr_DMC <- function(d) {
     alist (
       E ~ dgampois(lambda, phi),
       # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-      #log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
-      log(lambda) <- e_bar + sf + e[G] + bDP * XDP * T + bDN * XDN *T,
+      log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
+      #log(lambda) <- e_bar + sf + e[G] + bDP * XDP * T + bDN * XDN *T,
       
-      #vector[6]: f ~ normal(0, 0.2),
+      vector[6]: f ~ normal(0, 0.2),
       vector[ng]: e ~ normal(0, 3),
       bDP ~ normal(0, 1.5),
       bDN ~ normal(0, 1.5),
@@ -173,7 +173,7 @@ test_Expr_DMC <- function(d) {
   return(m_Expr_DMC)
 }
 
-m_Expr_DMC_new <- test_Expr_DMC(gene_data_dmc[, 1:29])
+m_Expr_DMC_new2 <- test_Expr_DMC(gene_data_dmc[, 1:29])
 precis(m_Expr_DMC)
 
 # Multi-level Model for gene expression and DMCs
@@ -196,6 +196,7 @@ dat <- list (
   E = d_reshaped$expr,
   S = d_reshaped$sample,
   T = d_reshaped$strain,
+  sf = d_reshaped$sf,
   W = standardize(log(rep(d$width, 6))),
   e_bar = rep(e_bar, nrow(d_reshaped)),
   XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
@@ -206,16 +207,17 @@ dat <- list (
   ng = max(d_reshaped$id)
 )
 
-m_ML_Expr_DMC_new <- ulam(
+m_ML_Expr_DMC_new2 <- ulam(
   alist (
     E ~ dgampois(lambda, phi),
     
-    log(lambda) <- e_bar + f[S] + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
-    vector[6]: f ~ normal(0, 0.2),
+    #log(lambda) <- e_bar + f[S] + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
+    #vector[6]: f ~ normal(0, 0.2),
+    log(lambda) <- e_bar + sf + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
     vector[ng]: e ~ normal(0, 3),
     phi ~ exponential(1),
-    ebar ~ normal(0, 1.5),
-    sigma ~ exponential(1),
+    #ebar ~ normal(0, 1.5),
+    #sigma ~ exponential(1),
     vector[ng]: bDP ~ normal(bDP_bar, bDP_sigma),
     vector[ng]: bDN ~ normal(bDN_bar, bDN_sigma),
     c(bDP_bar, bDN_bar) ~ normal(0, 1.5),

@@ -67,9 +67,15 @@ get_DMC_in_regions <- function(regions) {
   x <- meth_in_region(data[, 2:4])
   data <- cbind(data, x)
   # selec regions with non-zero CpG sites
-  data_dmc <- data[data$ncpg>0, ]
+  data_dmc <- data[data$ncpg > 0, ]
   # Only keep expressed genes that have a least 3 nonzero counts in expression data 
   data_dmc <- data_dmc %>% filter(rowSums(data_dmc[, 8:13] > 0) >= 3)
+  # dens((data_dmc$dmc_neg+data_dmc$dmc_pos) *1000 / data_dmc$width)
+  # plot(data_dmc$dmc_neg/data_dmc$ncpg, data_dmc$dmc_pos/data_dmc$ncpg)
+  # x <- (data_dmc$dmc_neg) / data_dmc$ncpg
+  # which (x == max(x))
+  # x2 <- log(gene_data_dmc$dmc_pos +1) 
+  
   # get average methylation level per region by strains
   load("RData/methobj.RData")
   sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
@@ -79,48 +85,19 @@ get_DMC_in_regions <- function(regions) {
   m2 <- rowMeans(m[, 3:5])
   data_dmc$m1 <- m1
   data_dmc$m2 <- m2
+
+  b <- p$beta[as.character(gene_data_dmc$ID), ]
+  b1 <- rowMeans(b[, 1:2])
+  b2 <- rowMeans(b[, 3:5])
+  #s <- normalize(c(b1, b2))
+  #gene_data_dmc$b1 <- s[1:ng]
+  #gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
   
   return(data_dmc)
 }
 
-# count # of methyl sites in gene regions
-x <- meth_in_region(gene_data[, 2:4])
-gene_data <- cbind(gene_data, x)
-# select genes with non-zero Cpg sites
-gene_data_dmc <- gene_data[gene_data$ncpg>0, ]
-dens((gene_data_dmc$dmc_neg+gene_data_dmc$dmc_pos) *1000 / gene_data_dmc$width)
-plot(gene_data_dmc$dmc_neg/gene_data_dmc$ncpg, gene_data_dmc$dmc_pos/gene_data_dmc$ncpg)
-x <- (gene_data_dmc$dmc_neg) / gene_data_dmc$ncpg
-which (x == max(x))
-x2 <- log(gene_data_dmc$dmc_pos +1) 
-
-# Only keep expressed genes that have a least 3 nonzero counts in expression data 
-gene_data_dmc <- gene_data_dmc %>% filter(rowSums(gene_data_dmc[, 8:13] > 0) >= 3)
-
-# get average methylation level per gene by strains
-load("RData/methobj.RData")
-sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
-p <- getFeatureMethyl(methobj, as(gene_data_dmc, "GRanges"), sample.ids, lo.count = 3)
-m <- p$m[as.character(gene_data_dmc$ID), ] # reorder the data by gene_data_dmc ID's
-m1 <- rowMeans(m[, 1:2])        # average m values of EH1516
-m2 <- rowMeans(m[, 3:5])
-#ng <- length(m1)
-#s <- standardize(c(m1, m2))
-#gene_data_dmc$m1 <- s[1:ng]
-#gene_data_dmc$m2 <- s[(ng+1):(2*ng)]
-gene_data_dmc$m1 <- m1
-gene_data_dmc$m2 <- m2
-
 # Get methylation data in gene regions
 gene_data_dmc <- get_DMC_in_regions(gene_regions_uq)
-
-b <- p$beta[as.character(gene_data_dmc$ID), ]
-b1 <- rowMeans(b[, 1:2])
-b2 <- rowMeans(b[, 3:5])
-#s <- normalize(c(b1, b2))
-#gene_data_dmc$b1 <- s[1:ng]
-#gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
-
 
 # Test with a sample of gene_data_dmc
 # colnames(gene_data_dmc)[1] <- "gid"
@@ -306,46 +283,35 @@ m_Expr_M <- test_Expr_Mval(gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos >0 ))
 
 
 # Get DMCs in the promoter regions
-# Set up regions in methyl_by_regions.R
-#promoters <- as.data.frame(gene.parts$promoters)
-#promoters$ID = mapping[promoters$name, "ID"]
-#promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
-#colnames(promoters)[1] <- "chr"
-prom_data <- merge(promoters, deg_data, by = "ID", no.dups=TRUE)
+# get GRanges representing all scaffolds
+scaffolds.gr = read_scaffold_gr("data/Ehux_genome.fasta.len")
+
+# Use functions in methyl_by_regions.R
+promoters <- getPromoterRegions(up=1000, down=1000, bed_file = "data/Ehux_genbank.bed") 
+promoters <- trimRegionByScaffolds(promoters)
+
+prom_data_dmc <- get_DMC_in_regions(promoters)
 # drop column 7
-prom_data[, 7] = NULL
-x <- meth_in_region(prom_data[, 2:4])
-prom_data <- cbind(prom_data, x)
-prom_data_dmc <-prom_data[prom_data$ncpg >0, ]
-dens((prom_data_dmc$dmc_neg+prom_data_dmc$dmc_pos)  / prom_data_dmc$width)
-x <- (prom_data_dmc$dmc_neg) / prom_data_dmc$ncpg
-which (x == max(x))
+prom_data_dmc[, 7] = NULL
 
-# filter out genes with at least 3 zero counts
-prom_data_dmc <- prom_data_dmc %>% filter(rowSums(prom_data_dmc[, 8:13] > 0) >= 3)
+m_Expr_DMC_Prom <- test_Expr_DMC(prom_data_dmc[, 1:29])
 
-m_Expr_DMC_Prom_gt_0 <- test_Expr_DMC(prom_data_dmc %>% filter (dmc_neg > 0 | dmc_pos > 0))
+m_Expr_DMC_Prom_gt_0 <- test_Expr_DMC(prom_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
 
 # Get DMCs in the up2000 regions
-up2000_data <- merge(up2000, deg_data, by="ID", no.dups=TRUE)
-up2000_data[, 7] = NULL
-x <- meth_in_region(up2000_data[, 2:4])
-up2000_data <- cbind(up2000_data, x)
-up2000_data_dmc <- up2000_data[up2000_data$ncpg > 0, ]
-dens((up2000_data_dmc$dmc_neg+up2000_data_dmc$dmc_pos)  / up2000_data_dmc$width)
-# filter out genes with at least 3 zero counts
-up2000_data_dmc <- up2000_data_dmc %>% filter(rowSums(up2000_data_dmc[, 8:13] > 0) >= 3)
+up2000 <- getPromoterRegions(up = 2000, down = 0, bed_file = "data/Ehux_genbank.bed")
+up2000 <- trimRegionByScaffolds(up2000)
+up2000_data_dmc <- get_DMC_in_regions(up2000)
+up2000_data_dmc[, 7] <- NULL
 
-m_Expr_DMC_up2000 <- test_Expr_DMC(up2000_data_dmc)
+m_Expr_DMC_up2000 <- test_Expr_DMC(up2000_data_dmc[, 1:29])
+m_Expr_DMC_up2000_gt_0 <- test_Expr_DMC(up2000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
 
 # Get DMCs in the up2000 regions
-up1000_data <- merge(up1000, deg_data, by="ID", no.dups=TRUE)
-up1000_data[, 7] = NULL
-x <- meth_in_region(up1000_data[, 2:4])
-up1000_data <- cbind(up1000_data, x)
-up1000_data_dmc <- up1000_data[up1000_data$ncpg > 0, ]
-dens((up1000_data_dmc$dmc_neg+up1000_data_dmc$dmc_pos)  / up1000_data_dmc$width)
-# filter out genes with at least 3 zero counts
-up1000_data_dmc <- up1000_data_dmc %>% filter(rowSums(up1000_data_dmc[, 8:13] > 0) >= 3)
+up1000 <- getPromoterRegions(up = 1000, down = 0, bed_file = "data/Ehux_genbank.bed")
+up1000 <- trimRegionByScaffolds(up1000)
+up1000_data_dmc <- get_DMC_in_regions(up1000)
+up1000_data_dmc[, 7] <- NULL
 
-m_Expr_DMC_up1000 <- test_Expr_DMC(up1000_data_dmc)
+m_Expr_DMC_up1000 <- test_Expr_DMC(up1000_data_dmc[, 1:29])
+m_Expr_DMC_up1000_gt_0 <- test_Expr_DMC(up1000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))

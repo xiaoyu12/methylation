@@ -27,7 +27,7 @@ read_scaffold_gr <- function(scaf_len_file="Ehux_genome.fasta.len") {
   scaffolds.gr <- as(scaffolds.gr, "GRanges")
   return(scaffolds.gr)
 }
-scaffold_gr = read_scaffold_gr("data/Ehux_genome.fasta.len")
+scaffolds.gr = read_scaffold_gr("data/Ehux_genome.fasta.len")
 
 # trim regions based the starts and ends of scaffolds
 trimRegionByScaffolds <- function(gr) {

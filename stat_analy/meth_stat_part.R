@@ -66,7 +66,7 @@ colnames(m_data)[20] <- "loc"
 
 # Bayesian model for differentially methylated sites
 # process the first 1000 CpG and build the model
-batch = 5000    # batch size set to be 1000
+batch = 1000    # batch size set to be 1000
 d <- m_data[1:batch, ]
 d <- reshape_data(d)
 dat <- list(

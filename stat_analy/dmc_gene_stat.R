@@ -42,7 +42,9 @@ load("./RData/dmc_list.RData")
 # Get meth data in one gene region
 meth_in_region <- function(gr) {
   nr <- nrow(gr)
-  m_count = data.frame(ncpg = rep(0, nr), dmc_neg = rep(0, nr), dmc_pos = rep(0, nr))
+  m_count = data.frame(ncpg = rep(0, nr), dmc_neg = rep(0, nr), dmc_pos = rep(0, nr),
+                       b1 = rep(0, nr), b2 = rep(0, nr),
+                       dmc_b1 = rep(0, nr), dmc_b2 = rep(0, nr))
   for (i in 1:nr) {
     chr <- as.character(gr[i, 1])
     start <- gr[i, 2]
@@ -54,7 +56,28 @@ meth_in_region <- function(gr) {
       nc <- nrow(m_in_g)
       n_neg <- sum(m_in_g$dmc & ((m_in_g$m2-m_in_g$m1) < 0))
       n_pos <- sum(m_in_g$dmc & ((m_in_g$m2-m_in_g$m1) > 0))
-      m_count[i, ] <- c(nc, n_neg, n_pos)
+      
+      # calculate the mean meth levels for all CpGs in the region for two strains
+      b1 <- 0
+      b2 <- 0
+      if(nc > 0) {
+        b1 <- (sum(m_in_g$numCs1) + sum(m_in_g$numCs2)) / 
+          ((sum(m_in_g$coverage1) + sum(m_in_g$coverage2)))
+        b2 <- (sum(m_in_g$numCs3) + sum(m_in_g$numCs4) + sum(m_in_g$numCs5)) / 
+          (sum(m_in_g$coverage3) + sum(m_in_g$coverage4) + sum(m_in_g$coverage5))
+      }
+      # calculate the mean meth levels for two strains for only DMCs
+      dmc_b1 <- 0
+      dmc_b2 <- 0
+      if((n_pos + n_neg) > 0) {
+        # DMCs in the region
+        dmc_in_g <- m_in_g %>% filter (dmc)
+        dmc_b1 <- (sum(dmc_in_g$numCs1) + sum(dmc_in_g$numCs2)) / 
+             ((sum(dmc_in_g$coverage1) + sum(dmc_in_g$coverage2)))
+        dmc_b2 <- (sum(dmc_in_g$numCs3) + sum(dmc_in_g$numCs4) + sum(dmc_in_g$numCs5)) / 
+          (sum(dmc_in_g$coverage3) + sum(dmc_in_g$coverage4) + sum(dmc_in_g$coverage5))
+      }
+      m_count[i, ] <- c(nc, n_neg, n_pos, b1, b2, dmc_b1, dmc_b2)
     }
   }
   
@@ -62,6 +85,7 @@ meth_in_region <- function(gr) {
 }
 
 get_DMC_in_regions <- function(regions) {
+  library(methylKit)
   data <- merge(regions, deg_data, by="ID", no.dups=TRUE)
   # count # of methyl sites in gene regions
   x <- meth_in_region(data[, 2:4])
@@ -77,21 +101,21 @@ get_DMC_in_regions <- function(regions) {
   # x2 <- log(gene_data_dmc$dmc_pos +1) 
   
   # get average methylation level per region by strains
-  load("RData/methobj.RData")
-  sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
-  p <- getFeatureMethyl(methobj, as(data_dmc, "GRanges"), sample.ids, lo.count = 3)
-  m <- p$m[as.character(data_dmc$ID), ]      # reorder the data by gene_data_dmc ID's
-  m1 <- rowMeans(m[, 1:2])                   # average m values of EH1516
-  m2 <- rowMeans(m[, 3:5])
-  data_dmc$m1 <- m1
-  data_dmc$m2 <- m2
-
-  b <- p$beta[as.character(gene_data_dmc$ID), ]
-  b1 <- rowMeans(b[, 1:2])
-  b2 <- rowMeans(b[, 3:5])
-  #s <- normalize(c(b1, b2))
-  #gene_data_dmc$b1 <- s[1:ng]
-  #gene_data_dmc$b2 <- s[(ng+1):(2*ng)]
+  # load("RData/methobj.RData")
+  # sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
+  # p <- getFeatureMethyl(methobj, as(data_dmc, "GRanges"), sample.ids, lo.count = 3)
+  # m <- p$m[as.character(data_dmc$ID), ]      # reorder the data by gene_data_dmc ID's
+  # m1 <- rowMeans(m[, 1:2])                   # average m values of EH1516
+  # m2 <- rowMeans(m[, 3:5])
+  # data_dmc$m1 <- m1
+  # data_dmc$m2 <- m2
+  # 
+  # b <- p$beta[as.character(data_dmc$ID), ]
+  # b1 <- rowMeans(b[, 1:2])
+  # b2 <- rowMeans(b[, 3:5])
+  # #s <- normalize(c(b1, b2))
+  # data_dmc$b1 <- b1
+  # data_dmc$b2 <- b2
   
   return(data_dmc)
 }
@@ -236,7 +260,7 @@ precis(m_ML_Expr_DMC)
 
 precis(m_ML_Expr_DMC_new)
 
-
+# Test GLM using difference of M values
 test_Expr_Mval <- function(d) {
   d <- add_column(d, id = 1:nrow(d), .after = 29)
   #d <- d[, c(1,8:13, 2:7, 26:30)]
@@ -266,7 +290,7 @@ test_Expr_Mval <- function(d) {
     alist (
       E ~ dgampois(lambda, phi),
       # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-      log(lambda) <- e_bar + f[S] + e[G] + bM * (m2 - m1),
+      log(lambda) <- e_bar + f[S] + e[G] + bM * dm,
       
       vector[6]: f ~ normal(0, 0.1),
       vector[ng]: e ~ normal(0, 3),
@@ -278,8 +302,51 @@ test_Expr_Mval <- function(d) {
   return(m_Expr_M)
 }
 
-m_Expr_M <- test_Expr_Mval(gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos >0 ))
+# Test GLM using difference of B (meth) values
+test_Expr_Bval <- function(d) {
+  d <- add_column(d, id = 1:nrow(d), .after = 29)
+  #d <- d[, c(1,8:13, 2:7, 26:30)]
+  d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
+  d_reshaped$ncpg <- rep(d$ncpg, 6)
+  d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
+  d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
+  d_reshaped$DE <- rep(d$DE, 6)
+  
+  e_bar = log(median(d_reshaped$expr))
+  
+  # Data list using average methylation level as input
+  dat <- list (
+    G = d_reshaped$id,
+    E = d_reshaped$expr,
+    S = d_reshaped$sample,
+    T = d_reshaped$strain,
+    e_bar = rep(e_bar, nrow(d_reshaped)),
+    #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
+    #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
+    db = c(rep(d$b1-d$b1, 3), rep(d$b2-d$b1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
+    ng = max(d_reshaped$id)
+  )
+  
+  # Model the relation between gene expression and change of average methylation values
+  m_Expr_B <- ulam(
+    alist (
+      E ~ dgampois(lambda, phi),
+      # f[S]: log sample factor, e[G] log express of gene in treatment 1,
+      log(lambda) <- e_bar + f[S] + e[G] + bB * db,
+      
+      vector[6]: f ~ normal(0, 0.1),
+      vector[ng]: e ~ normal(0, 3),
+      bB ~ normal(0, 1.5),
+      phi ~ dexp(1)
+    ), data = dat, chains=4, cores=4
+  )
+  
+  return(m_Expr_B)
+}
 
+m_Expr_M_gt_0 <- test_Expr_Mval(gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos >0 ))
+
+m_Expr_B_gt_0 <- test_Expr_Bval(gene_data_dmc %>% filter((dmc_neg+dmc_pos) > 0))
 
 
 # Get DMCs in the promoter regions
@@ -298,6 +365,8 @@ m_Expr_DMC_Prom <- test_Expr_DMC(prom_data_dmc[, 1:29])
 
 m_Expr_DMC_Prom_gt_0 <- test_Expr_DMC(prom_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
 
+m_Expr_M_Prom <- test_Expr_Mval(prom_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))
+
 # Get DMCs in the up2000 regions
 up2000 <- getPromoterRegions(up = 2000, down = 0, bed_file = "data/Ehux_genbank.bed")
 up2000 <- trimRegionByScaffolds(up2000)
@@ -307,6 +376,8 @@ up2000_data_dmc[, 7] <- NULL
 m_Expr_DMC_up2000 <- test_Expr_DMC(up2000_data_dmc[, 1:29])
 m_Expr_DMC_up2000_gt_0 <- test_Expr_DMC(up2000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
 
+m_Expr_M_up2000 <- test_Expr_Mval(up2000_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))
+
 # Get DMCs in the up2000 regions
 up1000 <- getPromoterRegions(up = 1000, down = 0, bed_file = "data/Ehux_genbank.bed")
 up1000 <- trimRegionByScaffolds(up1000)
@@ -315,3 +386,5 @@ up1000_data_dmc[, 7] <- NULL
 
 m_Expr_DMC_up1000 <- test_Expr_DMC(up1000_data_dmc[, 1:29])
 m_Expr_DMC_up1000_gt_0 <- test_Expr_DMC(up1000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
+
+m_Expr_M_up1000 <- test_Expr_Mval(up1000_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))

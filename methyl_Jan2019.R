@@ -11,7 +11,7 @@ methobj <- read_Bismark_coverage("./data/methylKit/")
 # Unite methylRawList to a single table
 # meth has a minimum coverage of 3 for each sample
 meth <- methylKit::unite(methobj)
-rm(methobj)
+sample_ids <- slot(meth, "sample.ids")
 
 strains <- factor(c(rep("EH1516",2), rep("EH217", 3)))
 #sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
@@ -48,14 +48,11 @@ dev.off()
 # Plot the methylation profile on scaffold_1 (chr1)
 # use a 10-kb window
 # make tiles of size 100
-#tiles100 = tileMethylCounts(filterByCoverage(methobj, lo.count = 10), win.size = 100, step.size = 100)
-tiles10K = tileMethylCounts(methobj, win.size = 10000, step.size = 10000)
-meth.chr1 <- subset(getData(tiles10K), chr == "chr1")
-#sum.chr1 <- matrix(rep(0, times=len*5), ncol=5)
-#for (i in 1:len) {
-#  meth.win <- subset(meth.chr1, start < i*10000 & start >= (i-1)*10000)
-#}
-ggplot(meth.chr1) + geom_smooth(mapping=aes(x = , y = ))
+# NOTE: This exploratory block was incomplete and caused errors; disabling for now.
+# If needed, re-enable with correct aesthetics and inputs.
+# tiles10K = tileMethylCounts(methobj, win.size = 10000, step.size = 10000)
+# meth.chr1 <- subset(getData(tiles10K), chr == "chr1")
+# ggplot(meth.chr1) + geom_smooth(mapping=aes(x = start, y = coverage))
 
 # calculate Differential Methylation with DSS
 myDiff.DSS <- calculateDiffMethDSS(meth, mc.cores = 4)
@@ -67,9 +64,7 @@ getCorrelation(meth10, plot = FALSE)
 clusterSamples(meth10, dist="correlation", plot=TRUE)
 methylKit::PCASamples(meth10, adj.lim=c(0.3, 0.1), scale = FALSE)
 myDiff10 <- calculateDiffMeth(meth10)
-myDiff10.DSS <- calculateDiffMethDSS(meth10, mc.cores = 24)
 sigDiff10 <- getMethylDiff(myDiff10, difference = 25, qvalue = 0.01)
-sigDiff10.DSS <- getMethylDiff(myDiff10.DSS, difference = 25, qvalue = 0.01)
 
 # Read mapping from rna* to gene ID
 mapping <- read.table("./genbank_mapping.txt", row.names = 1)
@@ -78,6 +73,12 @@ colnames(mapping) <- c("gene", "ID")
 # Read Ehux gene structures
 # By default, promoters are defined as 1000 bp up and down stream from the TSSes 
 gene.parts <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE, unique.prom = FALSE)
+
+# Additional promoter definitions
+gene.parts_up1000 <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE,
+                       up.flank = 1000, down.flank = 0, unique.prom = FALSE)
+gene.parts_dn1000 <- readTranscriptFeatures("../v2/Ehux_genbank.bed", remove.unusual = FALSE,
+                       up.flank = 0, down.flank = 1000, unique.prom = FALSE)
 
 # Get overlap of sigDiff10 and default gene parts. (up=1000, down=1000)
 sigDiff10.o.gp <- overlap_DMR_GeneFeatures(sigDiff10, gene.parts, expr.coef)
@@ -140,9 +141,9 @@ dev.off()
 CHG.cov10.Diff <- calculateDiffMeth(meth.CHG.cov10, mc.cores = 10)
 sig.CHG.cov10.Diff <- getMethylDiff(CHG.cov10.Diff, difference = 25, qvalue = 0.01)
 
-m <- getFeatureMethyl(methobj, gene.parts$promoters, sample.ids)
-m_up1000 <- getFeatureMethyl(methobj, gene.parts_up1000$promoters, sample.ids)
-m_dn1000 <- getFeatureMethyl(methobj, gene.parts_dn1000$promoters, sample.ids)
+m <- getFeatureMethyl(methobj, gene.parts$promoters, sample_ids)
+m_up1000 <- getFeatureMethyl(methobj, gene.parts_up1000$promoters, sample_ids)
+m_dn1000 <- getFeatureMethyl(methobj, gene.parts_dn1000$promoters, sample_ids)
 
 m.EH1516.beta <- m$beta[, 1:2]
 m.EH217.beta <- m$beta[, 3:5]
@@ -173,11 +174,11 @@ abline(h = -1, lty=2, col="gray")
 
 annot.DE.DMR <- annot.DE[intersect(rownames(annot.DE), rownames(m.DMR.beta)), ]
 
-m10 <- getFeatureMethyl(filterByCoverage(methobj, lo.count = 10), gene.parts$promoters, sample.ids)
-m10_up1000 <- getFeatureMethyl(filterByCoverage(methobj, lo.count = 10), gene.parts_up1000$promoters, sample.ids)
+m10 <- getFeatureMethyl(filterByCoverage(methobj, lo.count = 10), gene.parts$promoters, sample_ids)
+m10_up1000 <- getFeatureMethyl(filterByCoverage(methobj, lo.count = 10), gene.parts_up1000$promoters, sample_ids)
 
-m_exon <- getFeatureMethyl(methobj, gene.parts$exons, sample.ids)
-m_intron <- getFeatureMethyl(methobj, gene.parts$introns, sample.ids)
+m_exon <- getFeatureMethyl(methobj, gene.parts$exons, sample_ids)
+m_intron <- getFeatureMethyl(methobj, gene.parts$introns, sample_ids)
 
 
 # Diff mehtylated in promoter regions

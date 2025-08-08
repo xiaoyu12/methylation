@@ -15,10 +15,10 @@ addMapID <- function(ranges, mapping) {
 
 
 # Analyze DMRs overlapped with gene features and expression profiles
-# DMR: GRanges representing DMRs or DMCs. can also be a dataframe. 
+# DMR: GRanges representing DMRs or DMCs. can also be a dataframe.
 # features: Genomic features such as promoters, cpgi etc.
 # gene_exps: dataframe of differentially expressed genes with a field "logFC"
-# selected_ids: consider a subset of DMRs for given selected_ids 
+# selected_ids: consider a subset of DMRs for given selected_ids
 overlap_DMR_GeneFeatures <- function(DMR, features, gene_exps, selected_ids = NULL, ignore.strand = TRUE) {
   #DMR.gr <- makeGRangesFromDataFrame(DMR, keep.extra.columns = FALSE, ignore.strand = ignore.strand)
   DMR.gr <- as(DMR, "GRanges")
@@ -36,6 +36,30 @@ overlap_DMR_GeneFeatures <- function(DMR, features, gene_exps, selected_ids = NU
   }
   newList <- list("ann" = DMR.Ann, "tss" = DMR.TSS, "sel" = DMR.TSS.sel)
   return (newList)
+}
+
+# Safer variant that does not rely on global mapping; prefer this in new code.
+# DMR: GRanges or data.frame, features: transcript features from genomation
+# gene_exps: data.frame keyed by gene ID with a column named either "logFC" or "LFC"
+# mapping: data.frame with columns [gene, ID] mapping feature.name (rna) -> gene ID
+overlap_DMR_GeneFeatures2 <- function(DMR, features, gene_exps, mapping, selected_ids = NULL, ignore.strand = TRUE) {
+  DMR.gr <- as(DMR, "GRanges")
+  DMR.Ann <- annotateWithGeneParts(DMR.gr, features, intersect.chr = TRUE)
+  DMR.TSS <- getAssociationWithTSS(DMR.Ann)
+  genomation::plotTargetAnnotation(DMR.Ann)
+  DMR.TSS <- cbind(DMR[DMR.TSS$target.row, ], DMR.TSS)
+  # Map transcript (feature.name) to stable gene ID
+  DMR.TSS$ID <- mapping[DMR.TSS$feature.name, "ID"]
+  # Support both logFC and LFC column names
+  logfc_col <- if ("logFC" %in% colnames(gene_exps)) "logFC" else if ("LFC" %in% colnames(gene_exps)) "LFC" else NA_character_
+  if (is.na(logfc_col)) stop("gene_exps must contain either 'logFC' or 'LFC' column")
+  DMR.TSS$logFC <- gene_exps[as.character(DMR.TSS$ID), ][[logfc_col]]
+  DMR.TSS.sel <- NULL
+  if(!is.null(selected_ids)) {
+    ids <- intersect(DMR.TSS$ID, selected_ids)
+    DMR.TSS.sel <- DMR.TSS[which(DMR.TSS$ID %in% ids), ]
+  }
+  return(list("ann" = DMR.Ann, "tss" = DMR.TSS, "sel" = DMR.TSS.sel))
 }
 
 # Calculate methylation m values for methylBase object
@@ -191,4 +215,101 @@ plot_Methyl_Grange <- function(methData, grang) {
           xlab=paste("Genomic location", methhits$chr[1]), 
           ylab="Methylation difference" )
   abline(h=c(-10,0,10),lty=2)
+}
+
+######################################################################
+# New modular helpers for readability and efficiency
+######################################################################
+
+# Create directories if missing
+ensure_dir <- function(path) {
+  if (!dir.exists(path)) dir.create(path, recursive = TRUE)
+}
+
+# Load key inputs (mapping, gene features, expression table)
+load_inputs <- function(config) {
+  if (is.null(config$mapping_file) || !file.exists(config$mapping_file)) {
+    stop(paste0("Missing mapping_file: ", config$mapping_file))
+  }
+  if (is.null(config$genome_bed) || !file.exists(config$genome_bed)) {
+    stop(paste0("Missing genome_bed: ", config$genome_bed))
+  }
+  mapping <- read.table(config$mapping_file, row.names = 1)
+  colnames(mapping) <- c("gene", "ID")
+
+  gene_parts <- readTranscriptFeatures(config$genome_bed, remove.unusual = FALSE, unique.prom = FALSE)
+  gene_parts_up1000 <- readTranscriptFeatures(config$genome_bed, remove.unusual = FALSE,
+                                              up.flank = 1000, down.flank = 0, unique.prom = FALSE)
+  gene_parts_dn1000 <- readTranscriptFeatures(config$genome_bed, remove.unusual = FALSE,
+                                              up.flank = 0, down.flank = 1000, unique.prom = FALSE)
+
+  expr <- NULL
+  if (!is.null(config$expr_file) && nzchar(config$expr_file) && file.exists(config$expr_file)) {
+    expr <- read.csv(config$expr_file, header = TRUE, row.names = 1, sep = "\t")
+  }
+  return(list(mapping = mapping,
+              gene_parts = gene_parts,
+              gene_parts_up1000 = gene_parts_up1000,
+              gene_parts_dn1000 = gene_parts_dn1000,
+              expr = expr))
+}
+
+# Build methylation objects with simple caching
+build_methyl_objects <- function(config) {
+  ensure_dir(config$out_dir)
+  cache_dir <- ifelse(is.null(config$cache_dir), file.path(config$out_dir, "cache"), config$cache_dir)
+  ensure_dir(cache_dir)
+
+  meth_rds <- file.path(cache_dir, "meth.rds")
+  meth10_rds <- file.path(cache_dir, "meth10.rds")
+
+  if (file.exists(meth_rds)) {
+    meth <- readRDS(meth_rds)
+  } else {
+    methobj <- read_Bismark_coverage(config$data_dir)
+    meth <- methylKit::unite(methobj)
+    saveRDS(meth, meth_rds)
+  }
+
+  if (file.exists(meth10_rds)) {
+    meth10 <- readRDS(meth10_rds)
+  } else {
+    # Recreate methobj if not in memory; read again (cheap I/O compared to compute)
+    methobj <- read_Bismark_coverage(config$data_dir)
+    meth10 <- unite(filterByCoverage(methobj, lo.count = config$min_cov))
+    saveRDS(meth10, meth10_rds)
+  }
+
+  # Optional CHG via bismark list
+  bismark <- NULL
+  if (!isFALSE(config$load_chg)) {
+    bismark <- read_Bismark_CpG_CHG(base_dir = config$data_dir)
+  }
+  return(list(meth = meth, meth10 = meth10, bismark = bismark))
+}
+
+# Simple QC plotting wrappers
+plot_correlation_heatmap <- function(meth, out_file, meta = NULL) {
+  x <- getData(meth)
+  x_cov <- x[, slot(meth, "coverage.index")]
+  x_C <- x[, slot(meth, "numCs.index")]
+  beta <- x_C / x_cov
+  colnames(beta) <- slot(meth, "sample.ids")
+  cor_mat <- stats::cor(beta)
+  png(filename = out_file, width = 2400, height = 1600, res = 600)
+  on.exit(dev.off(), add = TRUE)
+  pheatmap::pheatmap(cor_mat, annotation = meta)
+}
+
+plot_pca <- function(meth, out_file, adj_lim = c(0.4, 0.1)) {
+  png(filename = out_file, width = 4800, height = 3200, res = 600)
+  on.exit(dev.off(), add = TRUE)
+  methylKit::PCASamples(meth, adj.lim = adj_lim, scale = FALSE)
+}
+
+# Run methylKit differential methylation
+run_methylkit_dm <- function(meth, diff_percent = 25, qvalue = 0.01, mc.cores = 1) {
+  diff_obj <- calculateDiffMeth(meth, mc.cores = mc.cores)
+  sig <- getMethylDiff(diff_obj, difference = diff_percent, qvalue = qvalue)
+  return(list(all = diff_obj, sig = sig))
 }

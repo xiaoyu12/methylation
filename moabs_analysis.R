@@ -3,23 +3,30 @@ library(genomation)
 library(stringr)
 source("meth_analysis_funcs.R")
 
-# read MOABS DMR from a file
-readMOABS_DMR_bedfile <- function(filename) {
-  library(rtracklayer)
-  dmr <- import(filename, format = "bed")
-  # calculate methyl difference
-  name <- dmr$name
-  name <- substring(name, 5)
-  vals <- str_split_fixed(name, "vs", 2)
-  # meth.diff = EH217 - EH1516
-  meth.diff <- as.numeric(vals[, 1]) - as.numeric(vals[, 2])
-  values(dmr) <- cbind(values(dmr), DataFrame(meth.diff))
-  return(dmr)
+# read MOABS DMR from a file (backup function if not in meth_analysis_funcs.R)
+if (!exists("readMOABS_DMR_bedfile")) {
+  readMOABS_DMR_bedfile <- function(filename) {
+    library(rtracklayer)
+    dmr <- import(filename, format = "bed")
+    # calculate methyl difference
+    name <- dmr$name
+    name <- substring(name, 5)
+    vals <- str_split_fixed(name, "vs", 2)
+    # meth.diff = EH217 - EH1516
+    meth.diff <- as.numeric(vals[, 1]) - as.numeric(vals[, 2])
+    values(dmr) <- cbind(values(dmr), DataFrame(meth.diff))
+    return(dmr)
+  }
 }
 
 # Read MOABS DMR and DMC files
 moabs.DMR <- readMOABS_DMR_bedfile("dmr_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
 moabs.DMC <- readMOABS_DMR_bedfile("dmc_M2_EH1516.G.bed_vs_EH217.G.bed.bed")
+strand(moabs.DMR) = "*"
+strand(moabs.DMC) = "*"
+
+# change strand to *
+
 
 # Read MOABS DMRs from moabs1.3.4 analysis
 moabs.134 <- readMOABS_DMR_bedfile("dmr_M2_moabs1.3.4.bed")
@@ -50,13 +57,28 @@ moabs.all <- c(moabs.DMR, moabs.HG.DMR)
 # Removed previous incorrect referrence to CPGi as Ehux_genbank.bed doesn't have that info
 # It only has gene structures. 
 
-ov <- findOverlaps(moabs.all, genes$Gene)
+ov <- findOverlaps(moabs.all, genes$Gene, ignore.strand=TRUE)
 DMGs <- genes$Gene[unique(to(ov)), ]
 DMGs$ID <- mapping[DMGs$name, ]$ID
-ov <- findOverlaps(moabs.DMR, genes$Gene)
+ov <- findOverlaps(moabs.DMR, genes$Gene, ignore.strand=TRUE)
 DMGs.CpG <- genes$Gene[unique(to(ov)), ]
 DMGs.CpG$ID <- mapping[DMGs.CpG$name,]$ID
-ov <- findOverlaps(moabs.HG.DMR, genes$Gene)
+
+# Plot DMR values and gene LFC
+ov <- findOverlaps(moabs.DMR[width(moabs.DMR) >= 100], genes$Gene, ignore.strand=TRUE)
+DMR.ov.genes <- as.data.frame(ov) 
+DMR.ov.genes <- cbind(DMR.ov.genes, as.data.frame(moabs.DMR[from(ov)]))
+DMR.ov.genes <- cbind(DMR.ov.genes, as.data.frame(genes$Gene[to(ov)]))
+colnames(DMR.ov.genes)[8] <- "dmr.name"
+colnames(DMR.ov.genes)[3:6] <- c("dmr.seqnames", "dmr.start", "dmr.end", "dmr.width")
+DMR.ov.genes[7] <- NULL
+DMR.ov.genes$ID <- mapping[DMR.ov.genes$name, ]$ID
+DMR.ov.genes$logFC <- expr.coef[as.character(DMR.ov.genes$ID), "logFC"]
+png(filename = "moabs_graphs/DMGs_Methdiff_LFG.png", res=600)
+ggplot(DMR.ov.genes) + geom_point(aes(x=meth.diff, y=logFC), color="blue", shape=20) + theme_light() 
+dev.off()
+
+ov <- findOverlaps(moabs.HG.DMR, genes$Gene, ignore.strand=TRUE)
 DMGs.CHG <- genes$Gene[unique(to(ov)), ]
 DMGs.CHG$ID <- mapping[DMGs.CHG$name, ]$ID
 
@@ -68,12 +90,12 @@ genes_up1000 <- resize(genes, width(genes) + 1000L, fix = "end")
 #write.csv(DMGs$ID, file="DMGs.csv", quote = FALSE)
 
 # Find the overlaps of DMRs and genes upstream regions
-up2000 <- intersect(up2000, scaffolds.gr, ignore.strand=TRUE)
-ov <- findOverlaps(moabs.all, up2000)
+up2000 <- intersect(up2000, scaffolds.gr)
+ov <- findOverlaps(moabs.all, up2000, ignore.strand=TRUE)
 DMPs <- up2000[unique(to(ov)), ]
-ov <- findOverlaps(moabs.DMR, up2000)
+ov <- findOverlaps(moabs.DMR, up2000, ignore.strand=TRUE)
 DMPs.CpG <- up2000[unique(to(ov)), ]
-ov <- findOverlaps(moabs.HG.DMR, up2000)
+ov <- findOverlaps(moabs.HG.DMR, up2000, ignore.strand=TRUE)
 DMPs.CHG <- up2000[unique(to(ov)), ]
 #write.csv(DMPs.CpG$ID, file="DMPs.CpG.csv", quote=FALSE)
 #write.csv(DMPs.CHG$ID, file="DMPs.CHG.csv", quote=FALSE)
@@ -97,10 +119,10 @@ genomation::plotTargetAnnotation(moabs.DMR.genes,
                                  col=c("green","gray","white"),main="DMRs overlapped with genes")
 
 
-moabs.DMR.in.cgpi <- moabs.DMR.TSS[which(slot(moabs.DMR.cpgi, "members")[, 1] > 0), ] # not correct because moabs.DMR.cpgi has longer length than moabs.DMR.TSS
-moabs.DMR.in.cgpi$meth.diff <- as.data.frame(moabs.DMR)[moabs.DMR.in.cgpi$target.row, "meth.diff"]
-plot(moabs.DMR.in.cgpi$meth.diff, moabs.DMR.in.cgpi$logFC, cex=1, pch = 20, 
-     col= "blue", xlab = "Methylation Difference", ylab = "Log Fold Change")
+#moabs.DMR.in.genes <- moabs.DMR.TSS[which(slot(moabs.DMR.genes, "members")[, 1] > 0), ] # not correct because moabs.DMR.cpgi has longer length than moabs.DMR.TSS
+#moabs.DMR.in.genes$meth.diff <- as.data.frame(moabs.DMR)[moabs.DMR.in.genes$target.row, "meth.diff"]
+#plot(moabs.DMR.in.genes$meth.diff, moabs.DMR.in.genes$logFC, cex=1, pch = 20, 
+#     col= "blue", xlab = "Methylation Difference", ylab = "Log Fold Change")
 
 # Plot longest MOABS DMRs
 moabs.longDMR <- subset(moabs.DMR.df, width > 1000)
@@ -149,10 +171,10 @@ aggregate_DMR <- function(dmrTSS) {
 plot_Mean_Meth_Diff_and_LFC <- function(dmr_mean_meth_diff) {
     dmr_mean_meth_diff$LFC <- expr.coef[as.character(dmr_mean_meth_diff$ID), ]$LFC
     t <- subset(dmr_mean_meth_diff, !is.na(LFC))
-    plot(t$meth.diff.mean, t$LFC, pch=20, col="blue", xlab='Avg DMR methylation diff', ylab='Log Fold Change',
+    plot(t$meth.diff.mean, t$LFC, pch=20, cex = 0.8, col="blue", xlab='Avg DMR methylation diff', ylab='Log Fold Change',
          xlim=c(min(-50, min(t$meth.diff.mean)-5), max(50, max(t$meth.diff.mean)+5)),
          ylim=c(min(-2, min(t$LFC)-0.25), max(2, max(t$LFC)+0.5)))
-    text(t$meth.diff.mean, t$LFC+0.25, labels = t$ID, cex=0.5)
+    #text(t$meth.diff.mean, t$LFC+0.25, labels = t$ID, cex=0.5)
     abline(h=0, col='red')
     abline(v=0, col='red')
     abline(h = 1, lty = 2, col="gray")
@@ -188,6 +210,11 @@ DE.DMR.mean$Description <- annot.DE[as.character(DE.DMR.mean$ID), "Description"]
 DE.DMR.mean.up <- subset(DE.DMR.mean, LFC > 0)
 DE.DMR.mean.down <- subset(DE.DMR.mean, LFC < 0)
 #write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
+
+# Plot the LFC and Avg DMR methylation difference for DMGs
+png(filename = "moabs_graphs/DMGs_DMR_LFC.png", width=7800, height=5400, res=600)
+plot_DMR_and_LFC(moabs.DMR, moabs.DMR.TSS, DMGs.CpG$ID)
+dev.off()
 
 # Retrieve the DMRs overlapped with promoter regions
 # s4@field is used to extract a field from a S4 object
@@ -239,4 +266,29 @@ matplot(methhits$start, methhits$meth.diff, type="o", pch = 20,col = 'blue',
         ylab="Methylation difference" )
 abline(h=c(-10,0,10),lty=2)
 
+# Find the number of overlapped genes between DMGs and DEGs
+non_DMGs_IDs <- setdiff(genes$Gene$ID, DMGs$ID)
+non_DEGs_IDs <- setdiff(genes$Gene$ID, rownames(annot.DE))
+DMGs_IDs <- DMGs$ID
+DEGS_IDs <- rownames(annot.DE)
+n_11 <- length(intersect(DMGs_IDs, DEGS_IDs))
+n_12 <- length(intersect(DMGs_IDs, non_DEGs_IDs))
+n_21 <- length(intersect(non_DMGs_IDs, DEGS_IDs))
+n_22 <- length(intersect(non_DMGs_IDs, non_DEGs_IDs))
+DMG_n_DEG <- matrix(c(n_11, n_12, n_21, n_22), nrow=2, byrow = TRUE) 
+dimnames(DMG_n_DEG) <- list("DMG" = c("DMG_Y", "DMG_N"), 
+                       "DEG" = c("DEG_Y", "DEG_N"))
+# Perform Chi-square test of independence
+test.DMG_n_DEG <- chisq.test(DMG_n_DEG)
 
+DMPs_IDs <- DMPs$ID
+non_DMPs_IDs <- setdiff(genes$Gene$ID, DMPs_IDs)
+n_11 <- length(intersect(DMPs_IDs, DEGS_IDs))
+n_12 <- length(intersect(DMPs_IDs, non_DEGs_IDs))
+n_21 <- length(intersect(non_DMPs_IDs, DEGS_IDs))
+n_22 <- length(intersect(non_DMPs_IDs, non_DEGs_IDs))
+DMP_n_DEG <- matrix(c(n_11, n_12, n_21, n_22), nrow=2, byrow = TRUE) 
+dimnames(DMP_n_DEG) <- list("DMP" = c("DMP_Y", "DMP_N"), 
+                            "DEG" = c("DEG_Y", "DEG_N"))
+# Perform Chi-square test of independence
+test.DMP_n_DEG <- chisq.test(DMP_n_DEG)

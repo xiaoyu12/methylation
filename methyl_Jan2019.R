@@ -123,7 +123,7 @@ genes.DE_no_vrlp <- readSelectedGeneFeatures("DE_no_overlap.tsv")
 #* Analyze CHG context
 #*************************************************************************#
 # Read Bismark CpG and CHG methylation data
-bismark <- read_Bismark_CpG_CHG(base_dir = "~/ESSD/data/methylKit/")
+bismark <- read_Bismark_CpG_CHG(base_dir = "data/methylKit/")
 
 meth.CHG.cov10 <- methylKit::unite(filterByCoverage(bismark$methCHG, lo.count = 10))
 CHG.cor <- getMethCorrelation(meth.CHG.cov10)

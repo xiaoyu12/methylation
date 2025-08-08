@@ -12,7 +12,7 @@ fit <- eBayes(lmFit(v, design))
 expr.coef <- topTable(fit, number = Inf, coef = 2, sort.by = "P")
 
 #DESeq2 analysis
-conditions = data.frame(conditions)
+conditions = data.frame(conditions, row.names = colnames(mat))
 ddsTable <- DESeqDataSetFromMatrix(countData = mat, colData = conditions, design = ~conditions)
 ddsTable <- estimateSizeFactors(ddsTable)
 dds <- DESeq(ddsTable)

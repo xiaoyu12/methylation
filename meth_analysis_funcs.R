@@ -1,83 +1,131 @@
 #library(Gviz)
 #library(ggbio)
 
-# Add a column of gene IDs to the Granges or dataframe
+# Add a column of gene IDs to the GRanges or data.frame using a transcript ->
+# gene mapping table.
 addMapID <- function(ranges, mapping) {
-  #mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
-  #colnames(mapping) <- c("gene", "ID")
-  ranges$ID = mapping[ranges$name, "ID"]
+  ranges$ID <- mapping[as.character(ranges$name), "ID"]
   ranges <- as.data.frame(ranges)
-  ranges = ranges[!duplicated(ranges$ID), ]    # remove duplicates due to alternative splicing
-  # convert back to Granges
+  ranges <- ranges[!is.na(ranges$ID), ]           # drop entries without mapping
+  ranges <- ranges[!duplicated(ranges$ID), ]       # collapse alternative isoforms
   ranges <- as(ranges, "GRanges")
   return(ranges)
 }
 
+# -----------------------------------------------------------------------------
+# Correlation helpers ---------------------------------------------------------
+# -----------------------------------------------------------------------------
 
-# Analyze DMRs overlapped with gene features and expression profiles
-# DMR: GRanges representing DMRs or DMCs. can also be a dataframe.
-# features: Genomic features such as promoters, cpgi etc.
-# gene_exps: dataframe of differentially expressed genes with a field "logFC"
-# selected_ids: consider a subset of DMRs for given selected_ids
-overlap_DMR_GeneFeatures <- function(DMR, features, gene_exps, selected_ids = NULL, ignore.strand = TRUE) {
-  #DMR.gr <- makeGRangesFromDataFrame(DMR, keep.extra.columns = FALSE, ignore.strand = ignore.strand)
-  DMR.gr <- as(DMR, "GRanges")
-  DMR.Ann <- annotateWithGeneParts(DMR.gr, features, intersect.chr = TRUE)
-  DMR.TSS <- getAssociationWithTSS(DMR.Ann)
-  genomation::plotTargetAnnotation(DMR.Ann)
-  DMR.TSS <- cbind(DMR[DMR.TSS$target.row, ], DMR.TSS)
-  # mapping feature name to gene ID's
-  DMR.TSS$ID <- mapping[DMR.TSS$feature.name, 2]
-  DMR.TSS$logFC <- gene_exps[as.character(DMR.TSS$ID), ]$logFC
-  DMR.TSS.sel <- NULL
-  if(!is.null(selected_ids)) {
-    ids <- intersect(DMR.TSS$ID, selected_ids)
-    DMR.TSS.sel <- DMR.TSS[which(DMR.TSS$ID %in% ids), ]
+# Compute a sample-by-sample methylation correlation matrix from a methylBase.
+compute_methyl_correlation <- function(meth) {
+  if (!inherits(meth, "methylBase")) {
+    stop("'meth' must be a methylBase object")
   }
-  newList <- list("ann" = DMR.Ann, "tss" = DMR.TSS, "sel" = DMR.TSS.sel)
-  return (newList)
+  dat <- getData(meth)
+  coverage_idx <- slot(meth, "coverage.index")
+  numCs_idx <- slot(meth, "numCs.index")
+  coverage <- dat[, coverage_idx]
+  numCs <- dat[, numCs_idx]
+  # guard against division by zero
+  beta <- numCs / pmax(coverage, 1)
+  colnames(beta) <- slot(meth, "sample.ids")
+  stats::cor(beta, use = "pairwise.complete.obs")
 }
 
-# Safer variant that does not rely on global mapping; prefer this in new code.
-# DMR: GRanges or data.frame, features: transcript features from genomation
-# gene_exps: data.frame keyed by gene ID with a column named either "logFC" or "LFC"
-# mapping: data.frame with columns [gene, ID] mapping feature.name (rna) -> gene ID
-overlap_DMR_GeneFeatures2 <- function(DMR, features, gene_exps, mapping, selected_ids = NULL, ignore.strand = TRUE) {
+# Backwards-compatible alias using historical naming style
+getMethCorrelation <- compute_methyl_correlation
+
+
+# Analyse DMRs overlapped with gene features and expression profiles.
+# DMR can be either a GRanges or a data.frame coercible to GRanges.
+overlap_dmr_gene_features <- function(DMR, features, gene_exps, mapping,
+                                      selected_ids = NULL, ignore.strand = TRUE,
+                                      plot_annotation = TRUE) {
   DMR.gr <- as(DMR, "GRanges")
-  DMR.Ann <- annotateWithGeneParts(DMR.gr, features, intersect.chr = TRUE)
-  DMR.TSS <- getAssociationWithTSS(DMR.Ann)
-  genomation::plotTargetAnnotation(DMR.Ann)
-  DMR.TSS <- cbind(DMR[DMR.TSS$target.row, ], DMR.TSS)
-  # Map transcript (feature.name) to stable gene ID
-  DMR.TSS$ID <- mapping[DMR.TSS$feature.name, "ID"]
-  # Support both logFC and LFC column names
-  logfc_col <- if ("logFC" %in% colnames(gene_exps)) "logFC" else if ("LFC" %in% colnames(gene_exps)) "LFC" else NA_character_
-  if (is.na(logfc_col)) stop("gene_exps must contain either 'logFC' or 'LFC' column")
-  DMR.TSS$logFC <- gene_exps[as.character(DMR.TSS$ID), ][[logfc_col]]
-  DMR.TSS.sel <- NULL
-  if(!is.null(selected_ids)) {
-    ids <- intersect(DMR.TSS$ID, selected_ids)
-    DMR.TSS.sel <- DMR.TSS[which(DMR.TSS$ID %in% ids), ]
+  DMR.Ann <- annotateWithGeneParts(DMR.gr, features, intersect.chr = TRUE,
+                                   ignore.strand = ignore.strand)
+  if (isTRUE(plot_annotation)) {
+    genomation::plotTargetAnnotation(DMR.Ann)
   }
-  return(list("ann" = DMR.Ann, "tss" = DMR.TSS, "sel" = DMR.TSS.sel))
+
+  DMR.TSS <- getAssociationWithTSS(DMR.Ann)
+  DMR.df <- if (is.data.frame(DMR)) DMR else as.data.frame(DMR)
+  rows <- DMR.TSS$target.row
+  DMR.TSS <- cbind(DMR.df[rows, , drop = FALSE], DMR.TSS)
+
+  transcript_ids <- as.character(DMR.TSS$feature.name)
+  if (!"ID" %in% colnames(mapping)) {
+    stop("'mapping' must contain a column named 'ID'")
+  }
+  DMR.TSS$ID <- mapping[transcript_ids, "ID"]
+
+  # Support both limma (logFC) and DESeq2 (LFC) outputs
+  logfc_col <- intersect(c("logFC", "LFC"), colnames(gene_exps))
+  if (length(logfc_col) == 0) {
+    stop("gene_exps must contain either a 'logFC' or 'LFC' column")
+  }
+  DMR.TSS$logFC <- gene_exps[as.character(DMR.TSS$ID), logfc_col[1]]
+
+  DMR.TSS.sel <- NULL
+  if (!is.null(selected_ids)) {
+    ids <- intersect(DMR.TSS$ID, selected_ids)
+    DMR.TSS.sel <- DMR.TSS[DMR.TSS$ID %in% ids, , drop = FALSE]
+  }
+
+  list(ann = DMR.Ann, tss = DMR.TSS, sel = DMR.TSS.sel)
+}
+
+# Backwards-compatible wrappers ------------------------------------------------
+
+overlap_DMR_GeneFeatures <- function(DMR, features, gene_exps,
+                                     selected_ids = NULL, ignore.strand = TRUE,
+                                     mapping = get0("mapping", ifnotfound = NULL),
+                                     plot_annotation = TRUE) {
+  if (is.null(mapping)) {
+    stop("Provide a 'mapping' data.frame or ensure a global object named 'mapping' exists.")
+  }
+  overlap_dmr_gene_features(DMR, features, gene_exps, mapping,
+                            selected_ids = selected_ids,
+                            ignore.strand = ignore.strand,
+                            plot_annotation = plot_annotation)
+}
+
+overlap_DMR_GeneFeatures2 <- function(DMR, features, gene_exps, mapping,
+                                      selected_ids = NULL, ignore.strand = TRUE,
+                                      plot_annotation = TRUE) {
+  overlap_dmr_gene_features(DMR, features, gene_exps, mapping,
+                            selected_ids = selected_ids,
+                            ignore.strand = ignore.strand,
+                            plot_annotation = plot_annotation)
 }
 
 # Calculate methylation m values for methylBase object
-calc_M_values <- function (meth, nsamples=5) {
-  t <- getData(meth)         # extract data part into a data frame
-  #nsamples <- (length(t) - 4) / 3
-  meth.data <- t[, 1:4]
-  for (i in 1:nsamples) {
-    colname = paste0("m", i)
-    # col 3i+3 for ith numC's, col 3i+4 for ith numT's 
-    meth.data[, colname] <- log2((t[, 3*i+3] + 1)/(t[, 3*i+4] + 1)) # Add one to avoid dividing by 0
+calc_M_values <- function (meth, nsamples = length(slot(meth, "sample.ids"))) {
+  dat <- getData(meth)
+  result <- dat[, seq_len(4)]
+  numCs_idx <- slot(meth, "numCs.index")
+  numTs_idx <- slot(meth, "numTs.index")
+  ns <- min(nsamples, length(numCs_idx))
+  for (i in seq_len(ns)) {
+    colname <- paste0("m", i)
+    result[[colname]] <- log2((dat[, numCs_idx[i]] + 1) / (dat[, numTs_idx[i]] + 1))
   }
-  return(meth.data)
+  return(result)
 }
-  
+
 # Calculate methylation beta values for methylBase object
-calc_Beta_values <- function (meth, nsamples=5) {
-  # TODO
+calc_Beta_values <- function (meth, nsamples = length(slot(meth, "sample.ids"))) {
+  dat <- getData(meth)
+  result <- dat[, seq_len(4)]
+  coverage_idx <- slot(meth, "coverage.index")
+  numCs_idx <- slot(meth, "numCs.index")
+  ns <- min(nsamples, length(numCs_idx))
+  for (i in seq_len(ns)) {
+    colname <- paste0("beta", i)
+    coverage <- dat[, coverage_idx[i]]
+    result[[colname]] <- ifelse(coverage == 0, NA_real_, dat[, numCs_idx[i]] / coverage)
+  }
+  return(result)
 }
 # Convert a region methylRaw list into a data.frame
 # methylraw:  Large methylRawList 
@@ -110,48 +158,86 @@ methyl_to_data_frame <- function(methylraw, regions) {
 }
   
 # Get methylation values for gene annotated features: e.g. promoters, exons ...
-getFeatureMethyl <- function(m.obj, g.features, s.names, lo.count=100) {
-  #mapping <- read.table("../v2/genbank_mapping.txt", row.names = 1)
-  #colnames(mapping) <- c("gene", "ID")
+getFeatureMethyl <- function(m.obj, g.features, s.names, mapping = NULL,
+                             lo.count = 100, id_column = "ID") {
   nsamples <- length(m.obj)
-  promoters <- as.data.frame(g.features)
-  #promoters$ID = mapping[promoters$name, "ID"]
-  #promoters = promoters[!duplicated(promoters$ID), ]    # remove duplicates due to alternative splicing
-  colnames(promoters)[1] <- "chr"
-  
+  if (length(s.names) != nsamples) {
+    stop("Length of 's.names' must equal the number of samples in 'm.obj'")
+  }
+
+  feature_df <- as.data.frame(g.features)
+  colnames(feature_df)[1] <- "chr"
+  if (!(id_column %in% colnames(feature_df))) {
+    if (is.null(mapping)) {
+      stop("g.features must contain column '", id_column,
+           "' or a 'mapping' data.frame must be supplied")
+    }
+    feature_df[[id_column]] <- mapping[as.character(feature_df$name), "ID"]
+  }
+  feature_df <- feature_df[!is.na(feature_df[[id_column]]), ]
+  feature_df <- feature_df[!duplicated(feature_df[[id_column]]), ]
+
   promobj <- regionCounts(m.obj, g.features)
-  
-  meth.prom <- list()
-  for (i in 1:nsamples) {
-    t <- merge(getData(promobj[[i]]), promoters, by.x=c("chr", "start", "end", "strand"), by.y=c("chr", "start", "end", "strand"))
-    t <- t[!duplicated(t$ID), ]    # Remove duplicates due to alternative splicing
-    t <- t[t$coverage >= lo.count, ]
-    t$beta <- t$numCs / t$coverage
-    t$m <- log2((t$numCs+1)/(t$numTs+1))    # piror of beta is 0.2
-    rownames(t) <- t$ID
-    meth.prom[[i]] <- t
+
+  sample_tables <- vector("list", nsamples)
+  names(sample_tables) <- s.names
+  for (i in seq_len(nsamples)) {
+    merged <- merge(
+      getData(promobj[[i]]),
+      feature_df,
+      by.x = c("chr", "start", "end", "strand"),
+      by.y = c("chr", "start", "end", "strand")
+    )
+    if (nrow(merged) == 0) {
+      sample_tables[[i]] <- merged
+      next
+    }
+    merged <- merged[merged$coverage >= lo.count, , drop = FALSE]
+    if (nrow(merged) == 0) {
+      sample_tables[[i]] <- merged
+      next
+    }
+    merged$beta <- merged$numCs / merged$coverage
+    merged$m <- log2((merged$numCs + 1) / (merged$numTs + 1))
+    merged <- merged[!duplicated(merged[[id_column]]), , drop = FALSE]
+    rownames(merged) <- merged[[id_column]]
+    sample_tables[[i]] <- merged
   }
-  
-  ids <- meth.prom[[1]]$ID
-  for (i in 2:nsamples) {
-    ids <- intersect(ids, meth.prom[[i]]$ID)
+
+  id_lists <- lapply(sample_tables, function(df) df[[id_column]])
+  id_lists <- id_lists[sapply(id_lists, length) > 0]
+  if (length(id_lists) == 0) {
+    empty <- matrix(nrow = 0, ncol = nsamples)
+    colnames(empty) <- s.names
+    return(list(coverage = empty, beta = empty, m = empty))
   }
-  mtx.coverage <- meth.prom[[1]][as.character(ids), "coverage"]
-  mtx.m <- meth.prom[[1]][as.character(ids), "m"]
-  mtx.beta <- meth.prom[[1]][as.character(ids), "beta"]
-  for (i in 2:nsamples) {
-    mtx.coverage <- cbind(mtx.coverage, meth.prom[[i]][as.character(ids), "coverage"])
-    mtx.m <- cbind(mtx.m, meth.prom[[i]][as.character(ids), "m"])
-    mtx.beta <- cbind(mtx.beta, meth.prom[[i]][as.character(ids), "beta"])
+  ids <- Reduce(intersect, id_lists)
+  if (length(ids) == 0) {
+    empty <- matrix(nrow = 0, ncol = nsamples)
+    colnames(empty) <- s.names
+    return(list(coverage = empty, beta = empty, m = empty))
   }
-  colnames(mtx.coverage) <- s.names
-  colnames(mtx.m) <- s.names
-  colnames(mtx.beta) <- s.names
-  rownames(mtx.coverage) <- as.character(ids)
-  rownames(mtx.m) <- as.character(ids)
-  rownames(mtx.beta) <-as.character(ids)
-  
-  return (list("coverage"=mtx.coverage, "beta"=mtx.beta, "m"=mtx.m))
+
+  build_matrix <- function(col_name) {
+    mat <- matrix(nrow = length(ids), ncol = nsamples)
+    for (i in seq_len(nsamples)) {
+      df <- sample_tables[[i]]
+      if (nrow(df) == 0) {
+        mat[, i] <- NA_real_
+      } else {
+        mat[, i] <- df[ids, col_name, drop = TRUE]
+      }
+    }
+    colnames(mat) <- s.names
+    rownames(mat) <- ids
+    mat
+  }
+
+  coverage_mat <- build_matrix("coverage")
+  beta_mat <- build_matrix("beta")
+  m_mat <- build_matrix("m")
+
+  list(coverage = coverage_mat, beta = beta_mat, m = m_mat)
 }
 
 # get methylation data in a genomics range
@@ -159,6 +245,43 @@ getMethInGRange <- function(meth, gr) {
   meth.gr <- as(meth, "GRanges")
   hits <- !is.na(findOverlaps(meth.gr, gr, select = "first"))
   return (meth[hits, ])
+}
+
+# Read transcript features for a selected set of genes defined in gene_list_file.
+read_selected_gene_features <- function(gene_list_file, genome_bed,
+                                        up_flank = 1000, down_flank = 1000,
+                                        rna_column = "rna",
+                                        remove_unusual = FALSE,
+                                        unique_prom = FALSE) {
+  genes <- read.table(gene_list_file, sep = "\t", header = TRUE,
+                      stringsAsFactors = FALSE)
+  if (!(rna_column %in% colnames(genes))) {
+    stop("Column '", rna_column, "' is not present in ", gene_list_file)
+  }
+  transcripts <- genes[[rna_column]]
+  features <- readTranscriptFeatures(genome_bed,
+                                     remove.unusual = remove_unusual,
+                                     unique.prom = unique_prom,
+                                     up.flank = up_flank,
+                                     down.flank = down_flank)
+  for (slot_name in names(features)) {
+    features[[slot_name]] <- features[[slot_name]][
+      features[[slot_name]]$name %in% transcripts
+    ]
+  }
+  features
+}
+
+# Backwards-compatible wrapper using historic name and default genome bed path.
+readSelectedGeneFeatures <- function(gene_list_file, up_flank = 1000,
+                                     down_flank = 1000,
+                                     genome_bed = file.path("..", "v2", "Ehux_genbank.bed"),
+                                     ...) {
+  read_selected_gene_features(gene_list_file,
+                              genome_bed = genome_bed,
+                              up_flank = up_flank,
+                              down_flank = down_flank,
+                              ...)
 }
 
 ##
@@ -290,12 +413,7 @@ build_methyl_objects <- function(config) {
 
 # Simple QC plotting wrappers
 plot_correlation_heatmap <- function(meth, out_file, meta = NULL) {
-  x <- getData(meth)
-  x_cov <- x[, slot(meth, "coverage.index")]
-  x_C <- x[, slot(meth, "numCs.index")]
-  beta <- x_C / x_cov
-  colnames(beta) <- slot(meth, "sample.ids")
-  cor_mat <- stats::cor(beta)
+  cor_mat <- compute_methyl_correlation(meth)
   png(filename = out_file, width = 2400, height = 1600, res = 600)
   on.exit(dev.off(), add = TRUE)
   pheatmap::pheatmap(cor_mat, annotation = meta)

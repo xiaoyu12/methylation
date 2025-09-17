@@ -1,390 +1,481 @@
 ###############################################################################
-# This script analyze the relation of differentially expressed genes (DEGs) with 
-# DMCs in the their gene, promoter
-# and upstream regions 
-#
+# DMC-Gene Statistical Analysis
+# 
+# This script analyzes the relationship between differentially expressed genes 
+# (DEGs) and differentially methylated cytosines (DMCs) in gene, promoter, 
+# and upstream regions using Bayesian statistical modeling.
+# 
+# Main functions:
+# - meth_in_region: Count methylation sites within genomic regions
+# - get_DMC_in_regions: Extract DMC data for specific regions
+# - test_Expr_DMC/Mval/Bval: Bayesian models for expression-methylation relationships
+# 
+# Author: [Xiaoyu Zhang]
+# Date: [2025-08-08]
 ###############################################################################
+
+# Load required libraries
 library(rethinking)
 library(tidyverse)
-
-options(mc.cores = parallel::detectCores())
-rstan_options(auto_write = TRUE)
-# set up gene_regions in ../methyl_by_regions.R
-gene_regions
-
-# remove duplicates in gene_regions
-gene_regions_uq <- gene_regions %>% distinct(ID, .keep_all = TRUE)
-# load gene expr data from Bayesian analysis
-load("./RData/deg.RData")
-
-# Calculate scaling factor using DESeq2
 library(DESeq2)
-samples <- data.frame(samples = colnames(deg_data[, 2:7]))
-samples$strain <- c(rep("EH1516", 3), rep("EH217",3))
-dds <- DESeqDataSetFromMatrix(countData = deg_data[, 2:7], colData=samples, design = ~1)
-dds <- estimateSizeFactors(dds)
-log(sizeFactors(dds))
+library(methylKit)
 
-#fix col names
-colnames(deg_data)[8:9] <- c("expr_base", "std")
-colnames(deg_data)[14:15] <- c("logfc", "std.1")
-# merge gene_regions with DEG data
-gene_data <- merge(gene_regions_uq, deg_data, by = "ID", no.dups=TRUE)
+# Configure parallel processing
+options(mc.cores = parallel::detectCores())
+#rstan_options(auto_write = TRUE)
+
+# Configuration constants
+NUM_SAMPLES <- 6
+MIN_EXPRESSED_SAMPLES <- 3
+NUM_CHAINS <- 4
+NUM_CORES <- 4
+SAMPLE_SIZE_SUBSET <- 1000
+# ============================================================================
+# DATA LOADING AND PREPROCESSING
+# ============================================================================
+
+# Load gene regions data (assumes gene_regions is available from methyl_by_regions.R)
+if (!exists("gene_regions")) {
+  stop("gene_regions object not found. Please run ../methyl_by_regions.R first")
+}
+
+# Validate gene_regions structure
+required_cols <- c("ID", "chr", "start", "end")
+if (!all(required_cols %in% colnames(gene_regions))) {
+  stop(paste("gene_regions missing required columns:", 
+             paste(setdiff(required_cols, colnames(gene_regions)), collapse = ", ")))
+}
+
+# Remove duplicate gene regions
+gene_regions_uq <- gene_regions %>% 
+  distinct(ID, .keep_all = TRUE)
+
+# Load differential expression data
+deg_data_file <- "./RData/deg.RData"
+if (!file.exists(deg_data_file)) {
+  stop(paste("Expression data file not found:", deg_data_file))
+}
+load(deg_data_file)
+
+# Calculate DESeq2 scaling factors
+samples <- data.frame(
+  samples = colnames(deg_data[, 2:7]),
+  strain = rep(c("EH1516", "EH217"), each = 3)
+)
+
+dds <- DESeqDataSetFromMatrix(
+  countData = deg_data[, 2:7], 
+  colData = samples, 
+  design = ~1
+)
+dds <- estimateSizeFactors(dds)
+scaling_factors <- log(sizeFactors(dds))
+
+# Standardize column names
+colnames(deg_data)[c(8, 9, 14, 15)] <- c("expr_base", "std", "logfc", "std.1")
+
+# Merge gene regions with expression data
+gene_data <- merge(gene_regions_uq, deg_data, by = "ID", no.dups = TRUE)
+
+# Load methylation data
+dmc_files <- c("./RData/dmc.RData", "./RData/dmc_list.RData")
+missing_files <- dmc_files[!file.exists(dmc_files)]
+if (length(missing_files) > 0) {
+  stop(paste("Methylation data files not found:", paste(missing_files, collapse = ", ")))
+}
 
 load("./RData/dmc.RData")
-# Make a list of meth data, separate by chr 
-#dmc_data_list <- list()
-#for(chr in  unique(dmc_data_all$chr)) {
-#  dmc_data_list[[chr]] <- dmc_data_all[dmc_data_all$chr == chr, ]
-#}
-# load the meth data list from file
 load("./RData/dmc_list.RData")
-# Get meth data in one gene region
+
+# Validate methylation data structure
+if (!exists("dmc_data_list") || !is.list(dmc_data_list)) {
+  stop("dmc_data_list not found or not a list")
+}
+
+# Define strain coding
+strain_vector <- rep(0:1, each = 3)  # 0: EH1516, 1: EH217
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+#' Calculate methylation statistics within genomic regions
+#' 
+#' @param gr Data frame with genomic regions (chr, start, end)
+#' @return Data frame with methylation counts and levels
+#' @details Optimized version with vectorized operations and error handling
 meth_in_region <- function(gr) {
+  if (nrow(gr) == 0) {
+    warning("Empty genomic regions provided")
+    return(data.frame())
+  }
+  
   nr <- nrow(gr)
-  m_count = data.frame(ncpg = rep(0, nr), dmc_neg = rep(0, nr), dmc_pos = rep(0, nr),
-                       b1 = rep(0, nr), b2 = rep(0, nr),
-                       dmc_b1 = rep(0, nr), dmc_b2 = rep(0, nr))
-  for (i in 1:nr) {
+  
+  # Pre-allocate result matrix for better performance
+  result_cols <- c("ncpg", "dmc_neg", "dmc_pos", "b1", "b2", "dmc_b1", "dmc_b2")
+  m_count <- data.frame(matrix(0, nrow = nr, ncol = length(result_cols)))
+  colnames(m_count) <- result_cols
+  
+  # Helper function to calculate methylation levels
+  calc_meth_level <- function(data, num_cols, cov_cols) {
+    if (nrow(data) == 0) return(0)
+    total_cs <- rowSums(data[, num_cols, drop = FALSE])
+    total_cov <- rowSums(data[, cov_cols, drop = FALSE])
+    if (sum(total_cov) == 0) return(0)
+    return(sum(total_cs) / sum(total_cov))
+  }
+  
+  # Process each region
+  for (i in seq_len(nr)) {
     chr <- as.character(gr[i, 1])
     start <- gr[i, 2]
     end <- gr[i, 3]
-    #print(paste(chr, start, end))
+    
     meth_d <- dmc_data_list[[chr]]
-    if(!is.null(meth_d)) { 
-      m_in_g <- meth_d[meth_d$start >= start & meth_d$end <= end, ]
-      nc <- nrow(m_in_g)
-      n_neg <- sum(m_in_g$dmc & ((m_in_g$m2-m_in_g$m1) < 0))
-      n_pos <- sum(m_in_g$dmc & ((m_in_g$m2-m_in_g$m1) > 0))
+    
+    if (!is.null(meth_d) && nrow(meth_d) > 0) {
+      # Vectorized region filtering
+      region_mask <- meth_d$start >= start & meth_d$end <= end
+      m_in_g <- meth_d[region_mask, ]
       
-      # calculate the mean meth levels for all CpGs in the region for two strains
-      b1 <- 0
-      b2 <- 0
-      if(nc > 0) {
-        b1 <- (sum(m_in_g$numCs1) + sum(m_in_g$numCs2)) / 
-          ((sum(m_in_g$coverage1) + sum(m_in_g$coverage2)))
-        b2 <- (sum(m_in_g$numCs3) + sum(m_in_g$numCs4) + sum(m_in_g$numCs5)) / 
-          (sum(m_in_g$coverage3) + sum(m_in_g$coverage4) + sum(m_in_g$coverage5))
+      if (nrow(m_in_g) > 0) {
+        nc <- nrow(m_in_g)
+        
+        # Vectorized DMC counting
+        dmc_mask <- m_in_g$dmc
+        meth_diff <- m_in_g$m2 - m_in_g$m1
+        n_neg <- sum(dmc_mask & meth_diff < 0, na.rm = TRUE)
+        n_pos <- sum(dmc_mask & meth_diff > 0, na.rm = TRUE)
+        
+        # Calculate methylation levels for all CpGs
+        eh1516_cols <- c("numCs1", "numCs2")
+        eh1516_cov_cols <- c("coverage1", "coverage2")
+        eh217_cols <- c("numCs3", "numCs4", "numCs5")
+        eh217_cov_cols <- c("coverage3", "coverage4", "coverage5")
+        
+        b1 <- calc_meth_level(m_in_g, eh1516_cols, eh1516_cov_cols)
+        b2 <- calc_meth_level(m_in_g, eh217_cols, eh217_cov_cols)
+        
+        # Calculate methylation levels for DMCs only
+        dmc_b1 <- 0
+        dmc_b2 <- 0
+        if (sum(dmc_mask) > 0) {
+          dmc_data <- m_in_g[dmc_mask, ]
+          dmc_b1 <- calc_meth_level(dmc_data, eh1516_cols, eh1516_cov_cols)
+          dmc_b2 <- calc_meth_level(dmc_data, eh217_cols, eh217_cov_cols)
+        }
+        
+        m_count[i, ] <- c(nc, n_neg, n_pos, b1, b2, dmc_b1, dmc_b2)
       }
-      # calculate the mean meth levels for two strains for only DMCs
-      dmc_b1 <- 0
-      dmc_b2 <- 0
-      if((n_pos + n_neg) > 0) {
-        # DMCs in the region
-        dmc_in_g <- m_in_g %>% filter (dmc)
-        dmc_b1 <- (sum(dmc_in_g$numCs1) + sum(dmc_in_g$numCs2)) / 
-             ((sum(dmc_in_g$coverage1) + sum(dmc_in_g$coverage2)))
-        dmc_b2 <- (sum(dmc_in_g$numCs3) + sum(dmc_in_g$numCs4) + sum(dmc_in_g$numCs5)) / 
-          (sum(dmc_in_g$coverage3) + sum(dmc_in_g$coverage4) + sum(dmc_in_g$coverage5))
-      }
-      m_count[i, ] <- c(nc, n_neg, n_pos, b1, b2, dmc_b1, dmc_b2)
     }
   }
   
   return(m_count)
 }
 
+#' Extract DMC data for genomic regions
+#' 
+#' @param regions Data frame with genomic regions
+#' @return Data frame with region data merged with methylation statistics
 get_DMC_in_regions <- function(regions) {
-  library(methylKit)
-  data <- merge(regions, deg_data, by="ID", no.dups=TRUE)
-  # count # of methyl sites in gene regions
-  x <- meth_in_region(data[, 2:4])
-  data <- cbind(data, x)
-  # selec regions with non-zero CpG sites
-  data_dmc <- data[data$ncpg > 0, ]
-  # Only keep expressed genes that have a least 3 nonzero counts in expression data 
-  data_dmc <- data_dmc %>% filter(rowSums(data_dmc[, 8:13] > 0) >= 3)
-  # dens((data_dmc$dmc_neg+data_dmc$dmc_pos) *1000 / data_dmc$width)
-  # plot(data_dmc$dmc_neg/data_dmc$ncpg, data_dmc$dmc_pos/data_dmc$ncpg)
-  # x <- (data_dmc$dmc_neg) / data_dmc$ncpg
-  # which (x == max(x))
-  # x2 <- log(gene_data_dmc$dmc_pos +1) 
+  if (!requireNamespace("methylKit", quietly = TRUE)) {
+    stop("methylKit package is required but not installed")
+  }
   
-  # get average methylation level per region by strains
-  # load("RData/methobj.RData")
-  # sample.ids = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C")
-  # p <- getFeatureMethyl(methobj, as(data_dmc, "GRanges"), sample.ids, lo.count = 3)
-  # m <- p$m[as.character(data_dmc$ID), ]      # reorder the data by gene_data_dmc ID's
-  # m1 <- rowMeans(m[, 1:2])                   # average m values of EH1516
-  # m2 <- rowMeans(m[, 3:5])
-  # data_dmc$m1 <- m1
-  # data_dmc$m2 <- m2
-  # 
-  # b <- p$beta[as.character(data_dmc$ID), ]
-  # b1 <- rowMeans(b[, 1:2])
-  # b2 <- rowMeans(b[, 3:5])
-  # #s <- normalize(c(b1, b2))
-  # data_dmc$b1 <- b1
-  # data_dmc$b2 <- b2
+  # Merge regions with expression data
+  merged_data <- merge(regions, deg_data, by = "ID", no.dups = TRUE)
   
-  return(data_dmc)
+  # Calculate methylation statistics for each region
+  meth_stats <- meth_in_region(merged_data[, 2:4])
+  combined_data <- cbind(merged_data, meth_stats)
+  
+  # Filter for regions with CpG sites and sufficient expression
+  filtered_data <- combined_data %>%
+    filter(
+      ncpg > 0,
+      rowSums(.[, 8:13] > 0) >= MIN_EXPRESSED_SAMPLES
+    )
+  
+  return(filtered_data)
 }
+
+# ============================================================================
+# DATA PROCESSING WORKFLOWS
+# ============================================================================
 
 # Get methylation data in gene regions
 gene_data_dmc <- get_DMC_in_regions(gene_regions_uq)
 
-# Test with a sample of gene_data_dmc
-# colnames(gene_data_dmc)[1] <- "gid"
-n <- sample(1:nrow(gene_data_dmc), 1000)
-#d <- gene_data_dmc[n, ]
-d <- gene_data_dmc
-
-# reshape the data so that each row has one gene expression
-# the first col assumed to be gid
-# the reshaped data start from col2 and have nsamples
-sf_v <- log(sizeFactors(dds))            # scaling factor vector of size 6
-strain <- c(rep(0, 3), rep(1, 3))  # 1: EH1516, 2: EH217
-reshape_data <- function(d, nsample, strain) {
-  # the first sample
-  d_reshaped <- d[, c(1, 2)]
-  colnames(d_reshaped) <- c("gid", "expr")
-  d_reshaped$sample <- 1
-  d_reshaped$strain <- strain[1]
-  d_reshaped$sf <- sf_v[1]
-  for (i in 2:nsample) {
-    d_i <- d[, c(1, i+1)]
-    colnames(d_i) <- c("gid", "expr")
-    d_i$sample <- i
-    d_i$sf <- sf_v[i]
-    d_i$strain <- strain[i]
-    d_reshaped <- rbind(d_reshaped, d_i)
+#' Reshape expression data for Bayesian modeling
+#' 
+#' @param expr_data Data frame with expression data
+#' @param nsample Number of samples
+#' @param strain_coding Vector indicating strain for each sample
+#' @return Reshaped data frame suitable for modeling
+reshape_expression_data <- function(expr_data, nsample = NUM_SAMPLES, strain_coding = strain_vector) {
+  if (ncol(expr_data) < nsample + 1) {
+    stop("Expression data has insufficient columns for specified number of samples")
   }
-  d_reshaped$id <- rep(1:nrow(d), nsample)
-  return (d_reshaped)
+  
+  # More efficient reshape using tidyr approach
+  gene_ids <- expr_data[, 1]
+  expr_matrix <- expr_data[, 2:(nsample + 1)]
+  
+  # Create long format data
+  reshaped_data <- expand.grid(
+    gene_idx = seq_len(nrow(expr_data)),
+    sample = seq_len(nsample)
+  )
+  
+  # Add expression values, strain info, and scaling factors
+  reshaped_data$gid <- rep(gene_ids, each = nsample)
+  reshaped_data$expr <- as.vector(t(expr_matrix))
+  reshaped_data$strain <- rep(strain_coding, nrow(expr_data))
+  reshaped_data$sf <- rep(scaling_factors, nrow(expr_data))
+  
+  # Reorder columns for consistency
+  reshaped_data <- reshaped_data[, c("gid", "expr", "sample", "strain", "sf", "gene_idx")]
+  colnames(reshaped_data)[ncol(reshaped_data)] <- "id"
+  
+  return(reshaped_data)
 }
 
-# Test the relation between the count of pos and neg DMCs with the gene expression
+#' Create data list for Bayesian modeling
+#' 
+#' @param reshaped_data Reshaped expression data
+#' @param region_data Original region data with methylation info
+#' @param model_type Type of model ("dmc", "mval", "bval")
+#' @return List suitable for rethinking::ulam
+create_model_data <- function(reshaped_data, region_data, model_type = "dmc") {
+  e_bar <- log(median(reshaped_data$expr))
+  n_genes <- max(reshaped_data$id)
+  n_samples <- nrow(reshaped_data)
+  
+  base_data <- list(
+    G = reshaped_data$id,
+    E = reshaped_data$expr,
+    S = reshaped_data$sample,
+    T = reshaped_data$strain,
+    sf = reshaped_data$sf,
+    e_bar = rep(e_bar, n_samples),
+    ng = n_genes
+  )
+  
+  # Add model-specific variables
+  if (model_type == "dmc") {
+    base_data$XC <- normalize(log(rep(region_data$ncpg, NUM_SAMPLES)))
+    base_data$XDP <- normalize(log(rep(region_data$dmc_pos + 1, NUM_SAMPLES)))
+    base_data$XDN <- normalize(log(rep(region_data$dmc_neg + 1, NUM_SAMPLES)))
+  } else if (model_type == "mval") {
+    base_data$dm <- c(
+      rep(region_data$m1 - region_data$m1, 3),  # EH1516 samples
+      rep(region_data$m2 - region_data$m1, 3)   # EH217 samples
+    )
+  } else if (model_type == "bval") {
+    base_data$db <- c(
+      rep(region_data$b1 - region_data$b1, 3),  # EH1516 samples
+      rep(region_data$b2 - region_data$b1, 3)   # EH217 samples
+    )
+  }
+  
+  return(base_data)
+}
+
+#' Test expression-DMC relationship using Bayesian modeling
+#' 
+#' @param data Input data frame
+#' @param model_type Type of model ("dmc", "mval", "bval")
+#' @return Fitted Bayesian model
+test_expression_methylation <- function(data, model_type = "dmc") {
+  # Prepare data
+  data$id <- seq_len(nrow(data))
+  expr_cols <- if (ncol(data) >= 30) c(1, 8:13, 2:7, 26:30) else c(1, 8:13, 2:7)
+  expr_data <- data[, expr_cols]
+  
+  # Reshape data
+  reshaped_data <- reshape_expression_data(expr_data)
+  
+  # Add methylation variables
+  reshaped_data$ncpg <- rep(data$ncpg, NUM_SAMPLES)
+  reshaped_data$dmc_pos <- rep(data$dmc_pos, NUM_SAMPLES)
+  reshaped_data$dmc_neg <- rep(data$dmc_neg, NUM_SAMPLES)
+  if ("DE" %in% colnames(data)) {
+    reshaped_data$DE <- rep(data$DE, NUM_SAMPLES)
+  }
+  
+  # Create model data
+  model_data <- create_model_data(reshaped_data, data, model_type)
+  
+  # Define and fit model based on type
+  if (model_type == "dmc") {
+    model <- ulam(
+      alist(
+        E ~ dgampois(lambda, phi),
+        log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN * T,
+        vector[6]: f ~ normal(0, 0.2),
+        vector[ng]: e ~ normal(0, 3),
+        bDP ~ normal(0, 1.5),
+        bDN ~ normal(0, 1.5),
+        phi ~ dexp(1)
+      ), 
+      data = model_data, 
+      chains = NUM_CHAINS, 
+      cores = NUM_CORES
+    )
+  } else if (model_type == "mval") {
+    model <- ulam(
+      alist(
+        E ~ dgampois(lambda, phi),
+        log(lambda) <- e_bar + f[S] + e[G] + bM * dm,
+        vector[6]: f ~ normal(0, 0.1),
+        vector[ng]: e ~ normal(0, 3),
+        bM ~ normal(0, 1.5),
+        phi ~ dexp(1)
+      ), 
+      data = model_data, 
+      chains = NUM_CHAINS, 
+      cores = NUM_CORES
+    )
+  } else if (model_type == "bval") {
+    model <- ulam(
+      alist(
+        E ~ dgampois(lambda, phi),
+        log(lambda) <- e_bar + f[S] + e[G] + bB * db,
+        vector[6]: f ~ normal(0, 0.1),
+        vector[ng]: e ~ normal(0, 3),
+        bB ~ normal(0, 1.5),
+        phi ~ dexp(1)
+      ), 
+      data = model_data, 
+      chains = NUM_CHAINS, 
+      cores = NUM_CORES
+    )
+  }
+  
+  return(model)
+}
+
+# Wrapper functions for backward compatibility
 test_Expr_DMC <- function(d) {
-  d$id <- 1:nrow(d)
-  d <- d[, c(1,8:13, 2:7, 26:30)]
-  d_reshaped <- reshape_data(d, 6, strain)
-  d_reshaped$ncpg <- rep(d$ncpg, 6)
-  d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
-  d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
-  d_reshaped$DE <- rep(d$DE, 6)
-  
-  e_bar = log(median(d_reshaped$expr))
-  # build the dat list for MCMC
-  dat <- list (
-    G = d_reshaped$id,              # gene id
-    E = d_reshaped$expr,            # expression count
-    S = d_reshaped$sample,          # sample ID
-    T = d_reshaped$strain,          # treatment, i.e. strain = 0 for EH1516, 1 for EH217
-    sf = d_reshaped$sf,             # scaling factor
-    #W = standardize(log(rep(d$width, 6))),          # gene width
-    e_bar = rep(e_bar, nrow(d_reshaped)),           # global mean expressionb
-    XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
-    XDP = normalize(log(d_reshaped$dmc_pos + 1)),   # normalized log number of dmc_pos sites
-    XDN = normalize(log(d_reshaped$dmc_neg + 1)),   # normalized log number of dmc_neg sites
-    #XDP = normalize(d_reshaped$dmc_pos / d_reshaped$ncpg),
-    #XDN = normalize(d_reshaped$dmc_neg / d_reshaped$ncpg),
-    ng = max(d_reshaped$id)
-  )
-  
-  # Model the relation between gene expression and DMCs
-  m_Expr_DMC <- ulam(
-    alist (
-      E ~ dgampois(lambda, phi),
-      # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-      log(lambda) <- e_bar + f[S] + e[G] + bDP * XDP * T + bDN * XDN *T,
-      #log(lambda) <- e_bar + sf + e[G] + bDP * XDP * T + bDN * XDN *T,
-      
-      vector[6]: f ~ normal(0, 0.2),
-      vector[ng]: e ~ normal(0, 3),
-      bDP ~ normal(0, 1.5),
-      bDN ~ normal(0, 1.5),
-      phi ~ dexp(1)
-    ), data = dat, chains=4, cores=4
-  )
-  return(m_Expr_DMC)
+  return(test_expression_methylation(d, "dmc"))
 }
 
-m_Expr_DMC <- test_Expr_DMC(gene_data_dmc[, 1:29])
-
-m_Expr_DMC_gt_0 <- test_Expr_DMC(gene_data_dmc[, 1:29] %>% filter (dmc_pos > 0 | dmc_neg >0))
-precis(m_Expr_DMC, depth=2, prob=0.95,
-       pars = c("f[1]", "f[2]", "f[3]", "f[4]", "f[5]", "f[6]"))
-precis(m_Expr_DMC_gt_0)
-precis(m_Expr_DMC_gt_0, depth=2, prob=0.95,
-       pars = c("f[1]", "f[2]", "f[3]", "f[4]", "f[5]", "f[6]"))
-
-# Multi-level Model for gene expression and DMCs
-# Only consider genes with non-zero DMCs
-d <- gene_data_dmc %>% filter (dmc_pos > 0 | dmc_neg > 0)
-d <- d[1:1000,]
-d <- gene_data_dmc
-d <- add_column(d, id = 1:nrow(d), .after = 29)
-#d <- d[, c(1,8:13, 2:7, 26:30)]
-d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
-d_reshaped$ncpg <- rep(d$ncpg, 6)
-d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
-d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
-d_reshaped$DE <- rep(d$DE, 6)
-
-e_bar = log(median(d_reshaped$expr))
-# build the dat list for MCMC
-dat <- list (
-  G = d_reshaped$id,
-  E = d_reshaped$expr,
-  S = d_reshaped$sample,
-  T = d_reshaped$strain,
-  sf = d_reshaped$sf,
-  W = standardize(log(rep(d$width, 6))),
-  e_bar = rep(e_bar, nrow(d_reshaped)),
-  XC = normalize(log(d_reshaped$ncpg)),           # normalized log number of CpG sites
-  XDP = normalize(log(d_reshaped$dmc_pos + 1)),   # normalized log number of dmc_pos sites
-  XDN = normalize(log(d_reshaped$dmc_neg + 1)),   # normalized log number of dmc_neg sites
-  #XDP = normalize(d_reshaped$dmc_pos / d_reshaped$ncpg),
-  #XDN = normalize(d_reshaped$dmc_neg / d_reshaped$ncpg),
-  ng = max(d_reshaped$id)
-)
-
-m_ML_Expr_DMC_new2 <- ulam(
-  alist (
-    E ~ dgampois(lambda, phi),
-    
-    #log(lambda) <- e_bar + f[S] + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
-    #vector[6]: f ~ normal(0, 0.2),
-    log(lambda) <- e_bar + sf + e[G] + bDP[G] * XDP * T + bDN[G] * XDN *T,
-    vector[ng]: e ~ normal(0, 3),
-    phi ~ exponential(1),
-    #ebar ~ normal(0, 1.5),
-    #sigma ~ exponential(1),
-    vector[ng]: bDP ~ normal(bDP_bar, bDP_sigma),
-    vector[ng]: bDN ~ normal(bDN_bar, bDN_sigma),
-    c(bDP_bar, bDN_bar) ~ normal(0, 1.5),
-    c(bDP_sigma, bDN_sigma) ~ exponential(1)
-  ), data = dat, chains = 4, cores = 4
-)
-precis(m_ML_Expr_DMC)
-
-precis(m_ML_Expr_DMC_new)
-
-# Test GLM using difference of M values
 test_Expr_Mval <- function(d) {
-  d <- add_column(d, id = 1:nrow(d), .after = 29)
-  #d <- d[, c(1,8:13, 2:7, 26:30)]
-  d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
-  d_reshaped$ncpg <- rep(d$ncpg, 6)
-  d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
-  d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
-  d_reshaped$DE <- rep(d$DE, 6)
-  
-  e_bar = log(median(d_reshaped$expr))
-  
-  # Data list using average methylation level as input
-  dat <- list (
-    G = d_reshaped$id,
-    E = d_reshaped$expr,
-    S = d_reshaped$sample,
-    T = d_reshaped$strain,
-    e_bar = rep(e_bar, nrow(d_reshaped)),
-    #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
-    #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
-    dm = c(rep(d$m1-d$m1, 3), rep(d$m2-d$m1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
-    ng = max(d_reshaped$id)
-  )
-  
-  # Model the relation between gene expression and change of average methylation values
-  m_Expr_M <- ulam(
-    alist (
-      E ~ dgampois(lambda, phi),
-      # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-      log(lambda) <- e_bar + f[S] + e[G] + bM * dm,
-      
-      vector[6]: f ~ normal(0, 0.1),
-      vector[ng]: e ~ normal(0, 3),
-      bM ~ normal(0, 1.5),
-      phi ~ dexp(1)
-    ), data = dat, chains=4, cores=4
-  )
-  
-  return(m_Expr_M)
+  return(test_expression_methylation(d, "mval"))
 }
 
-# Test GLM using difference of B (meth) values
 test_Expr_Bval <- function(d) {
-  d <- add_column(d, id = 1:nrow(d), .after = 29)
-  #d <- d[, c(1,8:13, 2:7, 26:30)]
-  d_reshaped <- reshape_data(d[, c(1,8:13, 2:7, 26:30)], 6, strain)
-  d_reshaped$ncpg <- rep(d$ncpg, 6)
-  d_reshaped$dmc_pos <- rep(d$dmc_pos, 6)
-  d_reshaped$dmc_neg <- rep(d$dmc_neg, 6)
-  d_reshaped$DE <- rep(d$DE, 6)
-  
-  e_bar = log(median(d_reshaped$expr))
-  
-  # Data list using average methylation level as input
-  dat <- list (
-    G = d_reshaped$id,
-    E = d_reshaped$expr,
-    S = d_reshaped$sample,
-    T = d_reshaped$strain,
-    e_bar = rep(e_bar, nrow(d_reshaped)),
-    #m1 = rep(d$m1, 6),                                   # standardized methylation m values in EH1516
-    #m2 = rep(d$m2, 6),                                   # standardized methylation m values in EH1516
-    db = c(rep(d$b1-d$b1, 3), rep(d$b2-d$b1, 3)),         # the first 3 samples from strain1 and last 3 from strain 2 
-    ng = max(d_reshaped$id)
-  )
-  
-  # Model the relation between gene expression and change of average methylation values
-  m_Expr_B <- ulam(
-    alist (
-      E ~ dgampois(lambda, phi),
-      # f[S]: log sample factor, e[G] log express of gene in treatment 1,
-      log(lambda) <- e_bar + f[S] + e[G] + bB * db,
-      
-      vector[6]: f ~ normal(0, 0.1),
-      vector[ng]: e ~ normal(0, 3),
-      bB ~ normal(0, 1.5),
-      phi ~ dexp(1)
-    ), data = dat, chains=4, cores=4
-  )
-  
-  return(m_Expr_B)
+  return(test_expression_methylation(d, "bval"))
 }
 
-m_Expr_M_gt_0 <- test_Expr_Mval(gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos >0 ))
+# ============================================================================
+# MAIN ANALYSIS WORKFLOW
+# ============================================================================
 
-m_Expr_B_gt_0 <- test_Expr_Bval(gene_data_dmc %>% filter((dmc_neg+dmc_pos) > 0))
+# Fit basic DMC models
+message("Fitting DMC models for gene regions...")
+gene_models <- list(
+  all_genes = test_Expr_DMC(gene_data_dmc[, 1:29]),
+  dmc_genes_only = test_Expr_DMC(
+    gene_data_dmc[, 1:29] %>% filter(dmc_pos > 0 | dmc_neg > 0)
+  )
+)
+
+# Fit methylation value models  
+message("Fitting methylation value models...")
+mval_models <- list(
+  dmc_genes_mval = test_Expr_Mval(
+    gene_data_dmc %>% filter(dmc_neg > 0 | dmc_pos > 0)
+  ),
+  dmc_genes_bval = test_Expr_Bval(
+    gene_data_dmc %>% filter((dmc_neg + dmc_pos) > 0)
+  )
+)
+
+# Display model summaries
+message("Model summaries:")
+cat("\n=== Basic DMC Model (All Genes) ===\n")
+precis(gene_models$all_genes, depth = 2, prob = 0.95,
+       pars = c("f[1]", "f[2]", "f[3]", "f[4]", "f[5]", "f[6]"))
+
+cat("\n=== DMC Model (DMC Genes Only) ===\n")
+precis(gene_models$dmc_genes_only)
 
 
-# Get DMCs in the promoter regions
-# get GRanges representing all scaffolds
-scaffolds.gr = read_scaffold_gr("data/Ehux_genome.fasta.len")
+# ============================================================================
+# REGIONAL ANALYSIS (PROMOTERS AND UPSTREAM REGIONS)
+# ============================================================================
 
-# Use functions in methyl_by_regions.R
-promoters <- getPromoterRegions(up=1000, down=1000, bed_file = "data/Ehux_genbank.bed") 
-promoters <- trimRegionByScaffolds(promoters)
+#' Analyze DMCs in specific genomic regions
+#' 
+#' @param region_name Name of the region for output
+#' @param region_data Region data from getPromoterRegions
+#' @return List of fitted models
+analyze_region <- function(region_name, region_data) {
+  message(paste("Analyzing", region_name, "regions..."))
+  
+  # Clean region data
+  if (ncol(region_data) > 29 && !is.null(region_data[, 7])) {
+    region_data[, 7] <- NULL  # Remove problematic column if present
+  }
+  
+  # Filter for regions with DMCs
+  dmc_regions <- region_data %>% filter(dmc_neg > 0 | dmc_pos > 0)
+  
+  if (nrow(dmc_regions) == 0) {
+    warning(paste("No DMCs found in", region_name, "regions"))
+    return(NULL)
+  }
+  
+  # Fit models
+  models <- list(
+    all_regions = test_Expr_DMC(region_data[, 1:29]),
+    dmc_regions_only = test_Expr_DMC(dmc_regions[, 1:29]),
+    dmc_mval_model = test_Expr_Mval(dmc_regions)
+  )
+  
+  return(models)
+}
 
-prom_data_dmc <- get_DMC_in_regions(promoters)
-# drop column 7
-prom_data_dmc[, 7] = NULL
+# Get scaffold information
+if (!exists("scaffold_ranges")) {
+  scaffold_ranges <- read_scaffold_gr("data/Ehux_genome.fasta.len")
+}
 
-m_Expr_DMC_Prom <- test_Expr_DMC(prom_data_dmc[, 1:29])
+# Define regions to analyze
+region_configs <- list(
+  promoters = list(up = 1000, down = 1000, name = "promoter"),
+  upstream_2kb = list(up = 2000, down = 0, name = "upstream 2kb"),
+  upstream_1kb = list(up = 1000, down = 0, name = "upstream 1kb")
+)
 
-m_Expr_DMC_Prom_gt_0 <- test_Expr_DMC(prom_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
+# Analyze each region type
+regional_models <- list()
 
-m_Expr_M_Prom <- test_Expr_Mval(prom_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))
+for (config_name in names(region_configs)) {
+  config <- region_configs[[config_name]]
+  
+  # Get region coordinates
+  regions <- getPromoterRegions(
+    up = config$up, 
+    down = config$down, 
+    bed_file = "data/Ehux_genbank.bed"
+  ) %>% 
+    trimRegionByScaffolds()
+  
+  # Get DMC data for regions
+  region_dmc_data <- get_DMC_in_regions(regions)
+  
+  # Analyze regions
+  regional_models[[config_name]] <- analyze_region(config$name, region_dmc_data)
+}
 
-# Get DMCs in the up2000 regions
-up2000 <- getPromoterRegions(up = 2000, down = 0, bed_file = "data/Ehux_genbank.bed")
-up2000 <- trimRegionByScaffolds(up2000)
-up2000_data_dmc <- get_DMC_in_regions(up2000)
-up2000_data_dmc[, 7] <- NULL
-
-m_Expr_DMC_up2000 <- test_Expr_DMC(up2000_data_dmc[, 1:29])
-m_Expr_DMC_up2000_gt_0 <- test_Expr_DMC(up2000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
-
-m_Expr_M_up2000 <- test_Expr_Mval(up2000_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))
-
-# Get DMCs in the up2000 regions
-up1000 <- getPromoterRegions(up = 1000, down = 0, bed_file = "data/Ehux_genbank.bed")
-up1000 <- trimRegionByScaffolds(up1000)
-up1000_data_dmc <- get_DMC_in_regions(up1000)
-up1000_data_dmc[, 7] <- NULL
-
-m_Expr_DMC_up1000 <- test_Expr_DMC(up1000_data_dmc[, 1:29])
-m_Expr_DMC_up1000_gt_0 <- test_Expr_DMC(up1000_data_dmc[, 1:29] %>% filter (dmc_neg > 0 | dmc_pos > 0))
-
-m_Expr_M_up1000 <- test_Expr_Mval(up1000_data_dmc %>% filter (dmc_neg >0 | dmc_pos > 0))
+# Display regional analysis summaries
+message("\nRegional Analysis Complete!")
+for (region_name in names(regional_models)) {
+  if (!is.null(regional_models[[region_name]])) {
+    cat(paste("\n=== Models for", region_name, "===\n"))
+    cat("All regions model summary:\n")
+    print(summary(regional_models[[region_name]]$all_regions))
+  }
+}

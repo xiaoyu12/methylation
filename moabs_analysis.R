@@ -106,7 +106,12 @@ genomation::plotTargetAnnotation(annot.up1000)
 annot.down1000 <- annotateWithFeature(moabs.DMR, down1000)
 genomation::plotTargetAnnotation(annot.down1000)
 
-moabs.DMR.Ann <- annotateWithGeneParts(moabs.DMR, gene.parts, intersect.chr = TRUE)
+# Get unique seqnames from gene.parts$TSSes
+tss_seqnames <- unique(seqnames(gene.parts$TSSes))
+# Filter moabs.DMR to keep only those whose seqnames are in tss_seqnames
+moabs.DMR <- moabs.DMR[seqnames(moabs.DMR) %in% tss_seqnames]
+
+moabs.DMR.Ann <- annotateWithGeneParts(moabs.DMR, gene.parts, intersect.chr = FALSE)
 moabs.DMR.TSS <- getAssociationWithTSS(moabs.DMR.Ann)
 moabs.DMR.TSS$ID <- mapping[moabs.DMR.TSS$feature.name, 2]
 moabs.DMR.TSS$logFC <- expr.coef[as.character(moabs.DMR.TSS$ID), ]$logFC
@@ -209,7 +214,8 @@ DE.DMR.mean <- plot_Mean_Meth_Diff_and_LFC(DE.DMR.mean)
 DE.DMR.mean$Description <- annot.DE[as.character(DE.DMR.mean$ID), "Description"]
 DE.DMR.mean.up <- subset(DE.DMR.mean, LFC > 0)
 DE.DMR.mean.down <- subset(DE.DMR.mean, LFC < 0)
-#write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
+write.csv(DE.DMR.mean.up, file = "DE.DMR.mean.up.csv")
+write.csv(DE.DMR.mean.down, file = "DE.DMR.mean.down.csv")
 
 # Plot the LFC and Avg DMR methylation difference for DMGs
 png(filename = "moabs_graphs/DMGs_DMR_LFC.png", width=7800, height=5400, res=600)

@@ -401,6 +401,8 @@ dev.off()
 # Plot the ratio of  DMC numbers / scaffold lengths
 scaffolds_100$CpG_DMC <- 0
 moabs.DMC.df = as.data.frame(moabs.DMC)
+# calculate average number of DMCs per 1000bp
+nrow(moabs.DMC.df) / genome_len * 1000
 colnames(moabs.DMC.df)[1] = "chr"
 for (i in 1:nrow(scaffolds_100)) {
   nDMC <-  moabs.DMC.df %>% filter(chr == scaffolds_100[i, ]$chr) %>% nrow()

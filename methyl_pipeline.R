@@ -20,7 +20,7 @@ config <- list(
   qvalue = 0.01,
   promoter_up = 1000,
   promoter_down = 0,
-  mc_cores = max(1, parallel::detectCores() - 1),
+  mc_cores = min(8, max(1, parallel::detectCores() - 1)),
   load_chg = TRUE
 )
 

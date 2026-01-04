@@ -1,1 +1,0 @@
-meth.prom <- getFeatureMethyl(methobj, gene.parts$promoters, sample.ids)

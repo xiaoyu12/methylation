@@ -1,5 +1,6 @@
 #library(Gviz)
 #library(ggbio)
+library(ggrepel)
 
 # Add a column of gene IDs to the GRanges or data.frame using a transcript ->
 # gene mapping table.
@@ -416,7 +417,7 @@ plot_correlation_heatmap <- function(meth, out_file, meta = NULL) {
   cor_mat <- compute_methyl_correlation(meth)
   png(filename = out_file, width = 2400, height = 1600, res = 600)
   on.exit(dev.off(), add = TRUE)
-  pheatmap::pheatmap(cor_mat, annotation = meta)
+  pheatmap::pheatmap(cor_mat, annotation = meta, fontsize = 8)
 }
 
 plot_pca <- function(meth, out_file, adj_lim = c(0.4, 0.1)) {

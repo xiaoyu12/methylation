@@ -11,8 +11,10 @@ library("methylKit")
 #' the methylKit Bismark pipeline.
 default_methyl_manifest <- function() {
   data.frame(
-    sample_id     = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C"),
-    group         = c("EH1516", "EH1516", "EH217", "EH217", "EH217"),
+    #sample_id     = c("EH1516B", "EH1516C", "EH217A", "EH217B", "EH217C"),
+    #group         = c("EH1516", "EH1516", "EH217", "EH217", "EH217"),
+    sample_id     = c("CCMP1516B", "CCMP1516C", "M217A", "M217B", "M217C"),
+    group         = c("CCMP1516", "CCMP1516", "M217", "M217", "M217"),
     treatment     = c(0, 0, 1, 1, 1),
     coverage_file = c(
       "EH1516C.merged_CpG_evidence.cov",
